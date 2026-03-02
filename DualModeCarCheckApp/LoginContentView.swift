@@ -1481,6 +1481,10 @@ struct LoginSettingsContentView: View {
     @State private var showURLManager: Bool = false
     @State private var isTestingProxies: Bool = false
     @State private var showDebugScreenshots: Bool = false
+    @State private var showIgnitionProxyImport: Bool = false
+    @State private var ignitionProxyBulkText: String = ""
+    @State private var ignitionProxyImportReport: ProxyRotationService.ImportReport?
+    @State private var isTestingIgnitionProxies: Bool = false
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -1494,6 +1498,7 @@ struct LoginSettingsContentView: View {
             blacklistSection
             urlRotationSection
             proxySection
+            ignitionProxySection
             stealthSection
             concurrencySection
             debugSection
@@ -1505,6 +1510,7 @@ struct LoginSettingsContentView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Settings")
         .sheet(isPresented: $showProxyImport) { proxyImportSheet }
+        .sheet(isPresented: $showIgnitionProxyImport) { ignitionProxyImportSheet }
         .sheet(isPresented: $showURLManager) { urlManagerSheet }
         .sheet(isPresented: $showDebugScreenshots) {
             NavigationStack {
@@ -1646,35 +1652,17 @@ struct LoginSettingsContentView: View {
     private var proxySection: some View {
         Section {
             HStack(spacing: 10) {
-                Image(systemName: "network").foregroundStyle(.cyan)
+                Image(systemName: "network").foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("SOCKS5 Proxies").font(.body)
+                    Text("Joe Fortune Proxies").font(.body)
                     Text("\(vm.proxyService.savedProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                let working = vm.proxyService.savedProxies.filter(\.isWorking).count
-                let total = vm.proxyService.savedProxies.count
-                if total > 0 {
-                    HStack(spacing: 4) {
-                        if working > 0 {
-                            Text("\(working) ok")
-                                .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                .foregroundStyle(.green)
-                        }
-                        let dead = vm.proxyService.savedProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                        if dead > 0 {
-                            Text("\(dead) dead")
-                                .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(Color(.tertiarySystemFill)).clipShape(Capsule())
-                }
+                proxyStatusBadge(proxies: vm.proxyService.savedProxies)
             }
 
             Button { showProxyImport = true } label: {
-                Label("Bulk Import SOCKS5", systemImage: "doc.on.clipboard.fill")
+                Label("Import Joe Proxies", systemImage: "doc.on.clipboard.fill")
             }
 
             if !vm.proxyService.savedProxies.isEmpty {
@@ -1682,85 +1670,187 @@ struct LoginSettingsContentView: View {
                     guard !isTestingProxies else { return }
                     isTestingProxies = true
                     Task {
-                        vm.log("Testing all \(vm.proxyService.savedProxies.count) proxies...")
-                        await vm.proxyService.testAllProxies()
+                        vm.log("Testing all \(vm.proxyService.savedProxies.count) Joe proxies...")
+                        await vm.proxyService.testAllProxies(forIgnition: false)
                         let working = vm.proxyService.savedProxies.filter(\.isWorking).count
-                        vm.log("Proxy test complete: \(working)/\(vm.proxyService.savedProxies.count) working", level: .success)
+                        vm.log("Joe proxy test complete: \(working)/\(vm.proxyService.savedProxies.count) working", level: .success)
                         isTestingProxies = false
                     }
                 } label: {
                     HStack {
-                        Label("Test All Proxies", systemImage: "antenna.radiowaves.left.and.right")
-                        if isTestingProxies {
-                            Spacer()
-                            ProgressView().controlSize(.small)
-                        }
+                        Label("Test Joe Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingProxies { Spacer(); ProgressView().controlSize(.small) }
                     }
                 }
                 .disabled(isTestingProxies)
 
                 Button {
-                    let exported = vm.proxyService.exportProxies()
+                    let exported = vm.proxyService.exportProxies(forIgnition: false)
                     UIPasteboard.general.string = exported
-                    vm.log("Exported \(vm.proxyService.savedProxies.count) proxies to clipboard", level: .success)
+                    vm.log("Exported \(vm.proxyService.savedProxies.count) Joe proxies to clipboard", level: .success)
                 } label: {
-                    Label("Export All to Clipboard", systemImage: "doc.on.doc")
+                    Label("Export to Clipboard", systemImage: "doc.on.doc")
                 }
 
                 let deadCount = vm.proxyService.savedProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
                 if deadCount > 0 {
                     Button(role: .destructive) {
-                        vm.proxyService.removeDead()
-                        vm.log("Removed \(deadCount) dead proxies")
+                        vm.proxyService.removeDead(forIgnition: false)
+                        vm.log("Removed \(deadCount) dead Joe proxies")
                     } label: {
-                        Label("Remove \(deadCount) Dead Proxies", systemImage: "xmark.circle")
+                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
                     }
                 }
 
                 ForEach(vm.proxyService.savedProxies) { proxy in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(proxyStatusColor(proxy))
-                            .frame(width: 7, height: 7)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(proxy.displayString)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                            HStack(spacing: 6) {
-                                Text(proxy.statusLabel)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(proxyStatusColor(proxy))
-                                if let date = proxy.lastTested {
-                                    Text(date, style: .relative)
-                                        .font(.caption2).foregroundStyle(.quaternary)
-                                }
-                            }
-                        }
-                        Spacer()
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) { vm.proxyService.removeProxy(proxy) } label: { Label("Delete", systemImage: "trash") }
-                    }
+                    proxyRow(proxy: proxy, forIgnition: false)
                 }
 
                 Button {
-                    vm.proxyService.resetAllStatus()
-                    vm.log("Reset all proxy statuses")
+                    vm.proxyService.resetAllStatus(forIgnition: false)
+                    vm.log("Reset all Joe proxy statuses")
                 } label: {
                     Label("Reset All Status", systemImage: "arrow.counterclockwise")
                 }
 
                 Button(role: .destructive) {
-                    vm.proxyService.removeAll()
-                    vm.log("Cleared all proxies")
+                    vm.proxyService.removeAll(forIgnition: false)
+                    vm.log("Cleared all Joe proxies")
                 } label: {
-                    Label("Clear All Proxies", systemImage: "trash")
+                    Label("Clear All Joe Proxies", systemImage: "trash")
                 }
             }
         } header: {
-            Text("Proxy")
+            Text("Joe Fortune Proxies")
         } footer: {
-            Text("Import SOCKS5 proxies in any common format. Supports host:port, user:pass@host:port, socks5://..., and multi-column paste.")
+            Text("SOCKS5 proxies used for Joe Fortune login testing.")
+        }
+    }
+
+    private var ignitionProxySection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "network").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ignition Proxies").font(.body)
+                    Text("\(vm.proxyService.ignitionProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                proxyStatusBadge(proxies: vm.proxyService.ignitionProxies)
+            }
+
+            Button { showIgnitionProxyImport = true } label: {
+                Label("Import Ignition Proxies", systemImage: "doc.on.clipboard.fill")
+            }
+
+            if !vm.proxyService.ignitionProxies.isEmpty {
+                Button {
+                    guard !isTestingIgnitionProxies else { return }
+                    isTestingIgnitionProxies = true
+                    Task {
+                        vm.log("Testing all \(vm.proxyService.ignitionProxies.count) Ignition proxies...")
+                        await vm.proxyService.testAllProxies(forIgnition: true)
+                        let working = vm.proxyService.ignitionProxies.filter(\.isWorking).count
+                        vm.log("Ignition proxy test complete: \(working)/\(vm.proxyService.ignitionProxies.count) working", level: .success)
+                        isTestingIgnitionProxies = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test Ignition Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingIgnitionProxies { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingIgnitionProxies)
+
+                Button {
+                    let exported = vm.proxyService.exportProxies(forIgnition: true)
+                    UIPasteboard.general.string = exported
+                    vm.log("Exported \(vm.proxyService.ignitionProxies.count) Ignition proxies to clipboard", level: .success)
+                } label: {
+                    Label("Export to Clipboard", systemImage: "doc.on.doc")
+                }
+
+                let deadCount = vm.proxyService.ignitionProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                if deadCount > 0 {
+                    Button(role: .destructive) {
+                        vm.proxyService.removeDead(forIgnition: true)
+                        vm.log("Removed \(deadCount) dead Ignition proxies")
+                    } label: {
+                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                    }
+                }
+
+                ForEach(vm.proxyService.ignitionProxies) { proxy in
+                    proxyRow(proxy: proxy, forIgnition: true)
+                }
+
+                Button {
+                    vm.proxyService.resetAllStatus(forIgnition: true)
+                    vm.log("Reset all Ignition proxy statuses")
+                } label: {
+                    Label("Reset All Status", systemImage: "arrow.counterclockwise")
+                }
+
+                Button(role: .destructive) {
+                    vm.proxyService.removeAll(forIgnition: true)
+                    vm.log("Cleared all Ignition proxies")
+                } label: {
+                    Label("Clear All Ignition Proxies", systemImage: "trash")
+                }
+            }
+        } header: {
+            Text("Ignition Proxies")
+        } footer: {
+            Text("Separate SOCKS5 proxies used exclusively for Ignition Casino login testing.")
+        }
+    }
+
+    private func proxyStatusBadge(proxies: [ProxyConfig]) -> some View {
+        Group {
+            if !proxies.isEmpty {
+                HStack(spacing: 4) {
+                    let working = proxies.filter(\.isWorking).count
+                    if working > 0 {
+                        Text("\(working) ok")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.green)
+                    }
+                    let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                    if dead > 0 {
+                        Text("\(dead) dead")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Color(.tertiarySystemFill)).clipShape(Capsule())
+            }
+        }
+    }
+
+    private func proxyRow(proxy: ProxyConfig, forIgnition: Bool) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(proxyStatusColor(proxy))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proxy.displayString)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(proxy.statusLabel)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(proxyStatusColor(proxy))
+                    if let date = proxy.lastTested {
+                        Text(date, style: .relative)
+                            .font(.caption2).foregroundStyle(.quaternary)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { vm.proxyService.removeProxy(proxy, fromIgnition: forIgnition) } label: { Label("Delete", systemImage: "trash") }
         }
     }
 
@@ -2145,6 +2235,101 @@ struct LoginSettingsContentView: View {
                         }
                     }
                     .disabled(proxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    private var ignitionProxyImportSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "flame.fill").foregroundStyle(.orange)
+                        Text("Import Ignition SOCKS5 Proxies").font(.headline)
+                    }
+                    Text("Paste proxies for Ignition Casino, one per line.").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        if let clipboard = UIPasteboard.general.string, !clipboard.isEmpty {
+                            ignitionProxyBulkText = clipboard
+                        }
+                    } label: {
+                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    let lineCount = ignitionProxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                    if lineCount > 0 {
+                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+
+                TextEditor(text: $ignitionProxyBulkText)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 200)
+                    .overlay(alignment: .topLeading) {
+                        if ignitionProxyBulkText.isEmpty {
+                            Text("Paste Ignition SOCKS5 proxies here...\n\n127.0.0.1:1080\nuser:pass@proxy.com:9050")
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.quaternary)
+                                .padding(.horizontal, 14).padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                if let report = ignitionProxyImportReport {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 12) {
+                            if report.added > 0 {
+                                Label("\(report.added) added", systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(.green)
+                            }
+                            if report.duplicates > 0 {
+                                Label("\(report.duplicates) duplicates", systemImage: "arrow.triangle.2.circlepath").font(.caption.bold()).foregroundStyle(.orange)
+                            }
+                            if !report.failed.isEmpty {
+                                Label("\(report.failed.count) failed", systemImage: "xmark.circle.fill").font(.caption.bold()).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Ignition Proxies").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showIgnitionProxyImport = false
+                        ignitionProxyBulkText = ""
+                        ignitionProxyImportReport = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let report = vm.proxyService.bulkImportSOCKS5(ignitionProxyBulkText, forIgnition: true)
+                        ignitionProxyImportReport = report
+                        if report.added > 0 {
+                            vm.log("Imported \(report.added) Ignition SOCKS5 proxies", level: .success)
+                        }
+                        ignitionProxyBulkText = ""
+                        if report.failed.isEmpty && report.added > 0 {
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                showIgnitionProxyImport = false
+                                ignitionProxyImportReport = nil
+                            }
+                        }
+                    }
+                    .disabled(ignitionProxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

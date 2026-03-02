@@ -7,7 +7,9 @@ class ProxyRotationService {
     static let shared = ProxyRotationService()
 
     var savedProxies: [ProxyConfig] = []
+    var ignitionProxies: [ProxyConfig] = []
     var currentProxyIndex: Int = 0
+    var currentIgnitionProxyIndex: Int = 0
     var rotateAfterDisabled: Bool = true
     var lastImportReport: ImportReport?
 
@@ -19,12 +21,14 @@ class ProxyRotationService {
     }
 
     private let persistKey = "saved_socks5_proxies_v2"
+    private let ignitionPersistKey = "saved_socks5_proxies_ignition_v1"
 
     init() {
         loadProxies()
+        loadIgnitionProxies()
     }
 
-    func bulkImportSOCKS5(_ text: String) -> ImportReport {
+    func bulkImportSOCKS5(_ text: String, forIgnition: Bool = false) -> ImportReport {
         let rawLines = text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -44,13 +48,18 @@ class ProxyRotationService {
         var duplicates = 0
         var failed: [String] = []
 
+        let targetList = forIgnition ? ignitionProxies : savedProxies
         for line in expandedLines {
             if let proxy = parseProxyLine(line) {
-                let isDuplicate = savedProxies.contains { $0.host == proxy.host && $0.port == proxy.port && $0.username == proxy.username }
+                let isDuplicate = targetList.contains { $0.host == proxy.host && $0.port == proxy.port && $0.username == proxy.username }
                 if isDuplicate {
                     duplicates += 1
                 } else {
-                    savedProxies.append(proxy)
+                    if forIgnition {
+                        ignitionProxies.append(proxy)
+                    } else {
+                        savedProxies.append(proxy)
+                    }
                     added += 1
                 }
             } else {
@@ -58,7 +67,9 @@ class ProxyRotationService {
             }
         }
 
-        if added > 0 { persistProxies() }
+        if added > 0 {
+            if forIgnition { persistIgnitionProxies() } else { persistProxies() }
+        }
 
         let report = ImportReport(added: added, duplicates: duplicates, failed: failed)
         lastImportReport = report
@@ -155,7 +166,17 @@ class ProxyRotationService {
         }
     }
 
-    func nextWorkingProxy() -> ProxyConfig? {
+    func nextWorkingProxy(forIgnition: Bool = false) -> ProxyConfig? {
+        if forIgnition {
+            let working = ignitionProxies.filter(\.isWorking)
+            guard !working.isEmpty else {
+                return ignitionProxies.isEmpty ? nil : ignitionProxies[currentIgnitionProxyIndex % ignitionProxies.count]
+            }
+            currentIgnitionProxyIndex = currentIgnitionProxyIndex % working.count
+            let proxy = working[currentIgnitionProxyIndex]
+            currentIgnitionProxyIndex += 1
+            return proxy
+        }
         let working = savedProxies.filter(\.isWorking)
         guard !working.isEmpty else {
             return savedProxies.isEmpty ? nil : savedProxies[currentProxyIndex % savedProxies.count]
@@ -173,6 +194,12 @@ class ProxyRotationService {
             savedProxies[idx].failCount = 0
             persistProxies()
         }
+        if let idx = ignitionProxies.firstIndex(where: { $0.id == proxy.id }) {
+            ignitionProxies[idx].isWorking = true
+            ignitionProxies[idx].lastTested = Date()
+            ignitionProxies[idx].failCount = 0
+            persistIgnitionProxies()
+        }
     }
 
     func markProxyFailed(_ proxy: ProxyConfig) {
@@ -184,52 +211,104 @@ class ProxyRotationService {
             }
             persistProxies()
         }
-    }
-
-    func removeProxy(_ proxy: ProxyConfig) {
-        savedProxies.removeAll { $0.id == proxy.id }
-        persistProxies()
-    }
-
-    func removeAll() {
-        savedProxies.removeAll()
-        currentProxyIndex = 0
-        persistProxies()
-    }
-
-    func removeDead() {
-        savedProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
-        persistProxies()
-    }
-
-    func resetAllStatus() {
-        for i in savedProxies.indices {
-            savedProxies[i].isWorking = false
-            savedProxies[i].lastTested = nil
-            savedProxies[i].failCount = 0
+        if let idx = ignitionProxies.firstIndex(where: { $0.id == proxy.id }) {
+            ignitionProxies[idx].failCount += 1
+            ignitionProxies[idx].lastTested = Date()
+            if ignitionProxies[idx].failCount >= 3 {
+                ignitionProxies[idx].isWorking = false
+            }
+            persistIgnitionProxies()
         }
-        persistProxies()
     }
 
-    func testAllProxies() async {
-        await withTaskGroup(of: (Int, Bool).self) { group in
+    func removeProxy(_ proxy: ProxyConfig, fromIgnition: Bool = false) {
+        if fromIgnition {
+            ignitionProxies.removeAll { $0.id == proxy.id }
+            persistIgnitionProxies()
+        } else {
+            savedProxies.removeAll { $0.id == proxy.id }
+            persistProxies()
+        }
+    }
+
+    func removeAll(forIgnition: Bool = false) {
+        if forIgnition {
+            ignitionProxies.removeAll()
+            currentIgnitionProxyIndex = 0
+            persistIgnitionProxies()
+        } else {
+            savedProxies.removeAll()
+            currentProxyIndex = 0
+            persistProxies()
+        }
+    }
+
+    func removeDead(forIgnition: Bool = false) {
+        if forIgnition {
+            ignitionProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
+            persistIgnitionProxies()
+        } else {
+            savedProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
+            persistProxies()
+        }
+    }
+
+    func resetAllStatus(forIgnition: Bool = false) {
+        if forIgnition {
+            for i in ignitionProxies.indices {
+                ignitionProxies[i].isWorking = false
+                ignitionProxies[i].lastTested = nil
+                ignitionProxies[i].failCount = 0
+            }
+            persistIgnitionProxies()
+        } else {
             for i in savedProxies.indices {
-                let proxy = savedProxies[i]
-                group.addTask {
-                    let working = await self.testSingleProxy(proxy)
-                    return (i, working)
-                }
+                savedProxies[i].isWorking = false
+                savedProxies[i].lastTested = nil
+                savedProxies[i].failCount = 0
             }
-
-            for await (index, working) in group {
-                if index < savedProxies.count {
-                    savedProxies[index].isWorking = working
-                    savedProxies[index].lastTested = Date()
-                    if working { savedProxies[index].failCount = 0 }
-                }
-            }
+            persistProxies()
         }
-        persistProxies()
+    }
+
+    func testAllProxies(forIgnition: Bool = false) async {
+        if forIgnition {
+            await withTaskGroup(of: (Int, Bool).self) { group in
+                for i in ignitionProxies.indices {
+                    let proxy = ignitionProxies[i]
+                    group.addTask {
+                        let working = await self.testSingleProxy(proxy)
+                        return (i, working)
+                    }
+                }
+                for await (index, working) in group {
+                    if index < ignitionProxies.count {
+                        ignitionProxies[index].isWorking = working
+                        ignitionProxies[index].lastTested = Date()
+                        if working { ignitionProxies[index].failCount = 0 }
+                    }
+                }
+            }
+            persistIgnitionProxies()
+        } else {
+            await withTaskGroup(of: (Int, Bool).self) { group in
+                for i in savedProxies.indices {
+                    let proxy = savedProxies[i]
+                    group.addTask {
+                        let working = await self.testSingleProxy(proxy)
+                        return (i, working)
+                    }
+                }
+                for await (index, working) in group {
+                    if index < savedProxies.count {
+                        savedProxies[index].isWorking = working
+                        savedProxies[index].lastTested = Date()
+                        if working { savedProxies[index].failCount = 0 }
+                    }
+                }
+            }
+            persistProxies()
+        }
     }
 
     private nonisolated func testSingleProxy(_ proxy: ProxyConfig) async -> Bool {
@@ -271,8 +350,9 @@ class ProxyRotationService {
         return false
     }
 
-    func exportProxies() -> String {
-        savedProxies.map { proxy in
+    func exportProxies(forIgnition: Bool = false) -> String {
+        let list = forIgnition ? ignitionProxies : savedProxies
+        return list.map { proxy in
             var result = ""
             if let u = proxy.username, let p = proxy.password {
                 result = "socks5://\(u):\(p)@\(proxy.host):\(proxy.port)"
@@ -281,6 +361,54 @@ class ProxyRotationService {
             }
             return result
         }.joined(separator: "\n")
+    }
+
+    var activeProxies: [ProxyConfig] {
+        savedProxies
+    }
+
+    func proxies(forIgnition: Bool) -> [ProxyConfig] {
+        forIgnition ? ignitionProxies : savedProxies
+    }
+
+    private func persistIgnitionProxies() {
+        let encoded = ignitionProxies.map { p -> [String: Any] in
+            var dict: [String: Any] = [
+                "id": p.id.uuidString,
+                "host": p.host,
+                "port": p.port,
+                "isWorking": p.isWorking,
+                "failCount": p.failCount,
+            ]
+            if let u = p.username { dict["username"] = u }
+            if let pw = p.password { dict["password"] = pw }
+            if let d = p.lastTested { dict["lastTested"] = d.timeIntervalSince1970 }
+            return dict
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: encoded) {
+            UserDefaults.standard.set(data, forKey: ignitionPersistKey)
+        }
+    }
+
+    private func loadIgnitionProxies() {
+        guard let data = UserDefaults.standard.data(forKey: ignitionPersistKey),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        ignitionProxies = array.compactMap { dict -> ProxyConfig? in
+            guard let host = dict["host"] as? String,
+                  let port = dict["port"] as? Int else { return nil }
+            var proxy = ProxyConfig(
+                host: host,
+                port: port,
+                username: dict["username"] as? String,
+                password: dict["password"] as? String
+            )
+            proxy.isWorking = dict["isWorking"] as? Bool ?? false
+            proxy.failCount = dict["failCount"] as? Int ?? 0
+            if let ts = dict["lastTested"] as? TimeInterval {
+                proxy.lastTested = Date(timeIntervalSince1970: ts)
+            }
+            return proxy
+        }
     }
 
     private func persistProxies() {
