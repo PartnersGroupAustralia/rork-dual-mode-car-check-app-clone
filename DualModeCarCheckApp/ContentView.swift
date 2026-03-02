@@ -95,6 +95,9 @@ struct ContentView: View {
                 Text("No results available")
             }
         }
+        .onChange(of: vm.isRunning) { _, newValue in
+            UIApplication.shared.isIdleTimerDisabled = newValue
+        }
         .alert("Unusual Failures Detected", isPresented: $vm.showUnusualFailureAlert) {
             Button("Stop After Current", role: .destructive) {
                 vm.stopAfterCurrent()

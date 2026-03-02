@@ -73,6 +73,9 @@ struct LoginContentView: View {
         .onChange(of: vm.targetSite) { _, _ in
             vm.persistSettings()
         }
+        .onChange(of: vm.isRunning) { _, newValue in
+            UIApplication.shared.isIdleTimerDisabled = newValue
+        }
         .alert("Batch Results", isPresented: $vm.showBatchResultPopup) {
             Button("OK") { vm.showBatchResultPopup = false }
         } message: {
