@@ -358,6 +358,16 @@ class LoginSiteWebSession: NSObject {
         return (false, "Login button not found")
     }
 
+    func waitForLoginButtonReady(timeout: TimeInterval = 15) async -> (ready: Bool, timedOut: Bool) {
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            let check = await checkLoginButtonReadiness()
+            if check.isReady { return (true, false) }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return (false, true)
+    }
+
     func verifyLoginFieldsExist() async -> (found: Int, missing: [String]) {
         let js = """
         (function() {
@@ -566,6 +576,106 @@ class LoginSiteWebSession: NSObject {
         } catch {
             return nil
         }
+    }
+
+    func fillForgotPasswordEmail(_ email: String) async -> (success: Bool, detail: String) {
+        let strategies = """
+        [
+            {"type":"id","value":"email"},{"type":"id","value":"forgot-email"},
+            {"type":"name","value":"email"},{"type":"name","value":"forgot_email"},
+            {"type":"placeholder","value":"Email"},{"type":"placeholder","value":"email"},
+            {"type":"placeholder","value":"Enter your email"},
+            {"type":"css","value":"input[type='email']"},{"type":"css","value":"input[type='text']"},
+            {"type":"label","value":"email"},{"type":"ariaLabel","value":"email"}
+        ]
+        """
+        let result = await executeJS(fillFieldJS(strategies: strategies, value: email))
+        return classifyFillResult(result, fieldName: "Forgot Password Email")
+    }
+
+    func clickForgotPasswordSubmit() async -> (success: Bool, detail: String) {
+        let js = """
+        (function() {
+            var strategies = [
+                function() {
+                    var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                        if (text.indexOf('send') !== -1 || text.indexOf('submit') !== -1 || text.indexOf('reset') !== -1 || text.indexOf('recover') !== -1) {
+                            btns[i].click(); return 'CLICKED_TEXT';
+                        }
+                    }
+                    return null;
+                },
+                function() {
+                    var btn = document.querySelector('button[type="submit"]');
+                    if (btn) { btn.click(); return 'CLICKED_SUBMIT'; }
+                    return null;
+                },
+                function() {
+                    var btn = document.querySelector('input[type="submit"]');
+                    if (btn) { btn.click(); return 'CLICKED_INPUT_SUBMIT'; }
+                    return null;
+                },
+                function() {
+                    var forms = document.querySelectorAll('form');
+                    if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
+                    return null;
+                }
+            ];
+            for (var i = 0; i < strategies.length; i++) {
+                var result = strategies[i]();
+                if (result) return result;
+            }
+            return 'NOT_FOUND';
+        })();
+        """
+        let result = await executeJS(js)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Submit clicked via: \(result)")
+        }
+        return (false, "Submit button not found")
+    }
+
+    func checkLoginButtonReadiness() async -> (isReady: Bool, opacity: Double, detail: String) {
+        let js = """
+        (function() {
+            var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
+            for (var i = 0; i < btns.length; i++) {
+                var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin') {
+                    var style = window.getComputedStyle(btns[i]);
+                    var opacity = parseFloat(style.opacity);
+                    var pointerEvents = style.pointerEvents;
+                    var disabled = btns[i].disabled;
+                    var bgColor = style.backgroundColor;
+                    var cursor = style.cursor;
+                    return JSON.stringify({
+                        opacity: opacity,
+                        pointerEvents: pointerEvents,
+                        disabled: disabled,
+                        bgColor: bgColor,
+                        cursor: cursor,
+                        text: text
+                    });
+                }
+            }
+            return 'NOT_FOUND';
+        })();
+        """
+        guard let result = await executeJS(js), result != "NOT_FOUND",
+              let data = result.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (false, 0, "Login button not found")
+        }
+
+        let opacity = json["opacity"] as? Double ?? 1.0
+        let disabled = json["disabled"] as? Bool ?? false
+        let pointerEvents = json["pointerEvents"] as? String ?? "auto"
+
+        let isReady = opacity > 0.8 && !disabled && pointerEvents != "none"
+        let detail = "opacity:\(String(format: "%.2f", opacity)) disabled:\(disabled) pointer:\(pointerEvents)"
+        return (isReady, opacity, detail)
     }
 
     func dumpPageStructure() async -> String {

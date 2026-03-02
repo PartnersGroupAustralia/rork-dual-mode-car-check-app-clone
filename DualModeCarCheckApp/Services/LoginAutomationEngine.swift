@@ -158,15 +158,41 @@ class LoginAutomationEngine {
         var lastEvaluation: EvaluationResult?
 
         for cycle in 1...maxSubmitCycles {
-            advanceTo(.submitting, attempt: attempt, message: "Submit cycle \(cycle)/\(maxSubmitCycles) — clicking login button")
+            advanceTo(.submitting, attempt: attempt, message: "Submit cycle \(cycle)/\(maxSubmitCycles) — checking login button readiness")
 
             if cycle > 1 {
+                let buttonCheck = await session.checkLoginButtonReadiness()
+                if !buttonCheck.isReady {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button not ready (\(buttonCheck.detail)) — waiting up to 15s", level: .warning))
+                    let waitResult = await session.waitForLoginButtonReady(timeout: 15)
+                    if waitResult.timedOut {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button hung (translucent/loading state) — requeuing to bottom", level: .warning))
+                        attempt.status = .failed
+                        attempt.errorMessage = "Login button hung in loading state — requeued"
+                        attempt.completedAt = Date()
+                        await captureDebugScreenshot(session: session, attempt: attempt, step: "button_hung", note: "Login button stuck in translucent/loading state", autoResult: .unknown)
+                        return .unsure
+                    }
+                }
+
                 attempt.logs.append(PPSRLogEntry(message: "Re-filling credentials for cycle \(cycle)", level: .info))
                 let _ = await session.fillUsername(attempt.credential.username)
                 try? await Task.sleep(for: .milliseconds(300))
                 let _ = await session.fillPassword(attempt.credential.password)
                 try? await Task.sleep(for: .milliseconds(400))
             }
+
+            let preClickCheck = await session.checkLoginButtonReadiness()
+            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) button state: \(preClickCheck.detail) ready:\(preClickCheck.isReady)", level: preClickCheck.isReady ? .info : .warning))
+
+            if !preClickCheck.isReady {
+                let waitResult = await session.waitForLoginButtonReady(timeout: 10)
+                if waitResult.timedOut {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still not ready after 10s wait", level: .warning))
+                }
+            }
+
+            try? await Task.sleep(for: .milliseconds(500))
 
             var submitResult: (success: Bool, detail: String) = (false, "")
             for submitAttempt in 1...3 {

