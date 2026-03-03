@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LoginContentView: View {
-    @AppStorage("productMode") private var modeRaw: String = ProductMode.joe.rawValue
+    let initialMode: ActiveAppMode
     @State private var vm = LoginViewModel()
     @State private var initialModeApplied: Bool = false
 
@@ -16,7 +16,7 @@ struct LoginContentView: View {
                 NavigationStack {
                     LoginDashboardContentView(vm: vm)
                 }
-                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Credentials", systemImage: "person.text.rectangle") {
@@ -28,21 +28,21 @@ struct LoginContentView: View {
                             }
                         }
                 }
-                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Working", systemImage: "checkmark.shield.fill") {
                 NavigationStack {
                     LoginWorkingListView(vm: vm)
                 }
-                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Sessions", systemImage: "rectangle.stack") {
                 NavigationStack {
                     LoginSessionMonitorContentView(vm: vm)
                 }
-                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             if vm.debugMode {
@@ -50,7 +50,7 @@ struct LoginContentView: View {
                     NavigationStack {
                         LoginDebugScreenshotsView(vm: vm)
                     }
-                    .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                    .overlay(alignment: .bottomLeading) { MainMenuButton() }
                 }
             }
 
@@ -58,7 +58,7 @@ struct LoginContentView: View {
                 NavigationStack {
                     LoginMoreMenuView(vm: vm)
                 }
-                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
         }
         .tint(accentColor)
@@ -66,11 +66,9 @@ struct LoginContentView: View {
         .onAppear {
             if !initialModeApplied {
                 initialModeApplied = true
-                let mode = ProductMode(rawValue: modeRaw) ?? .joe
-                switch mode {
+                switch initialMode {
                 case .joe: vm.setSiteMode(.joe)
                 case .ignition: vm.setSiteMode(.ignition)
-                case .dual: vm.setSiteMode(.dual)
                 case .ppsr: break
                 }
             }
@@ -190,20 +188,39 @@ struct LoginDashboardContentView: View {
                 connectionBadge
             }
 
-            joeIgnitionToggle
+            dualModeToggle
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 14))
     }
 
-    private var joeIgnitionToggle: some View {
-        TriModeSwitcher(siteMode: vm.siteMode) { mode in
-            withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
-                vm.setSiteMode(mode)
+    private var dualModeToggle: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.caption.bold())
+                .foregroundStyle(vm.dualSiteMode ? .cyan : .secondary)
+            Toggle(isOn: Binding(
+                get: { vm.dualSiteMode },
+                set: { newVal in
+                    withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
+                        if newVal {
+                            vm.setSiteMode(.dual)
+                        } else {
+                            vm.setSiteMode(vm.isIgnitionMode ? .ignition : .joe)
+                        }
+                    }
+                }
+            )) {
+                Text("Dual Mode")
+                    .font(.subheadline.weight(.medium))
             }
+            .tint(.cyan)
         }
-        .sensoryFeedback(.impact(weight: .medium), trigger: vm.siteMode.rawValue)
+        .padding(10)
+        .background(vm.dualSiteMode ? Color.cyan.opacity(0.08) : Color(.tertiarySystemFill))
+        .clipShape(.rect(cornerRadius: 10))
+        .sensoryFeedback(.impact(weight: .medium), trigger: vm.dualSiteMode)
     }
 
     private var connectionBadge: some View {
@@ -1565,23 +1582,35 @@ struct LoginSettingsContentView: View {
 
     private var siteToggleSection: some View {
         Section {
-            TriModeSwitcher(siteMode: vm.siteMode) { mode in
-                withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
-                    vm.setSiteMode(mode)
+            Toggle(isOn: Binding(
+                get: { vm.dualSiteMode },
+                set: { newVal in
+                    withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
+                        if newVal {
+                            vm.setSiteMode(.dual)
+                        } else {
+                            vm.setSiteMode(vm.isIgnitionMode ? .ignition : .joe)
+                        }
+                    }
+                }
+            )) {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dual Mode").font(.body)
+                        Text("Test Joe + Ignition simultaneously").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            .sensoryFeedback(.impact(weight: .medium), trigger: vm.siteMode.rawValue)
+            .tint(.cyan)
+            .sensoryFeedback(.impact(weight: .medium), trigger: vm.dualSiteMode)
         } header: {
             Text("Site Mode")
         } footer: {
-            switch vm.siteMode {
-            case .joe:
-                Text("Joe mode — URLs rotate through Joe Fortune domains.")
-            case .dual:
+            if vm.dualSiteMode {
                 Text("Dual mode — half sessions test Joe Fortune, half test Ignition simultaneously.")
-            case .ignition:
-                Text("Ignition mode — dark theme active. URLs rotate through Ignition domains.")
+            } else {
+                Text("\(vm.isIgnitionMode ? "Ignition" : "Joe") mode — URLs rotate through \(vm.isIgnitionMode ? "Ignition" : "Joe Fortune") domains.")
             }
         }
     }

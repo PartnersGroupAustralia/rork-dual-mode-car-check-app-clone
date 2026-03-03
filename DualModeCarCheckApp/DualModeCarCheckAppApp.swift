@@ -2,13 +2,12 @@ import SwiftUI
 
 @main
 struct DualModeCarCheckAppApp: App {
-    @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
-    @AppStorage("hasSelectedMode") private var hasSelectedMode: Bool = false
+    @AppStorage("activeAppMode") private var activeModeRaw: String = ""
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
     @State private var introFinished: Bool = false
 
-    private var currentMode: ProductMode {
-        ProductMode(rawValue: modeRaw) ?? .ppsr
+    private var activeMode: ActiveAppMode? {
+        ActiveAppMode(rawValue: activeModeRaw)
     }
 
     var body: some Scene {
@@ -16,18 +15,33 @@ struct DualModeCarCheckAppApp: App {
             if introVideoEnabled && !introFinished {
                 IntroVideoView(isFinished: $introFinished)
                     .transition(.opacity)
-            } else if hasSelectedMode {
+            } else if let mode = activeMode {
                 Group {
-                    if currentMode.isLoginMode {
-                        LoginContentView()
-                    } else {
+                    switch mode {
+                    case .joe:
+                        LoginContentView(initialMode: .joe)
+                    case .ignition:
+                        LoginContentView(initialMode: .ignition)
+                    case .ppsr:
                         ContentView()
                     }
                 }
-                .transition(.opacity)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
             } else {
-                ModeSelectorView(hasSelectedMode: $hasSelectedMode)
-                    .transition(.opacity)
+                MainMenuView(activeMode: Binding(
+                    get: { activeMode },
+                    set: { newMode in
+                        if let m = newMode {
+                            activeModeRaw = m.rawValue
+                        } else {
+                            activeModeRaw = ""
+                        }
+                    }
+                ))
+                .transition(.opacity)
             }
         }
     }

@@ -1,8 +1,6 @@
 import SwiftUI
 
 struct ContentView: View {
-    @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
-
     @State private var vm = PPSRAutomationViewModel()
     @State private var selectedTab: AppTab = .dashboard
 
@@ -21,6 +19,7 @@ struct ContentView: View {
                             }
                         }
                 }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Cards", systemImage: "creditcard.fill", value: .savedCards) {
@@ -32,6 +31,7 @@ struct ContentView: View {
                             }
                         }
                 }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Working", systemImage: "checkmark.shield.fill", value: .workingCards) {
@@ -43,18 +43,21 @@ struct ContentView: View {
                             }
                         }
                 }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Sessions", systemImage: "rectangle.stack", value: .sessions) {
                 NavigationStack {
                     LoginSessionMonitorView(vm: vm)
                 }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
                 NavigationStack {
                     PPSRSettingsView(vm: vm)
                 }
+                .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
         }
         .tint(.teal)
