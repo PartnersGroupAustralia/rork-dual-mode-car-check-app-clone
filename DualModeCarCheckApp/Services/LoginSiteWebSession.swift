@@ -317,119 +317,210 @@ class LoginSiteWebSession: NSObject {
     }
 
     func clickLoginButton() async -> (success: Bool, detail: String) {
-        let js = """
+        let megaClickJS = """
         (function() {
-            function findLoginBtn() {
-                var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], a[href*="login"], span[class*="btn"], div[class*="btn"]');
-                for (var i = 0; i < btns.length; i++) {
-                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                    if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin') return btns[i];
-                }
-                for (var i = 0; i < btns.length; i++) {
-                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                    if (text.indexOf('log in') !== -1 || text.indexOf('login') !== -1 || text.indexOf('sign in') !== -1) return btns[i];
-                }
-                var submitBtn = document.querySelector('button[type="submit"]');
-                if (submitBtn) return submitBtn;
-                var submitInput = document.querySelector('input[type="submit"]');
-                if (submitInput) return submitInput;
-                return null;
+            function getOpacity(el) {
+                try { return parseFloat(window.getComputedStyle(el).opacity); } catch(e) { return 1; }
             }
 
-            function deepClick(el) {
+            function humanClick(el) {
                 if (!el) return false;
                 try {
+                    el.scrollIntoView({behavior:'instant',block:'center'});
+                    var rect = el.getBoundingClientRect();
+                    if (rect.width === 0 && rect.height === 0) return false;
+                    var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                    var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
                     el.focus();
-                    var rect = el.getBoundingClientRect();
-                    var cx = rect.left + rect.width / 2;
-                    var cy = rect.top + rect.height / 2;
-                    var mdEvent = new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
-                    el.dispatchEvent(mdEvent);
-                    var muEvent = new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
-                    el.dispatchEvent(muEvent);
-                    var clickEvent = new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
-                    el.dispatchEvent(clickEvent);
+                    try { el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'})); } catch(e){}
+                    try { el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:cx,clientY:cy})); } catch(e){}
+                    try { el.dispatchEvent(new PointerEvent('pointerenter',{bubbles:false,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'})); } catch(e){}
+                    try { el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:false,clientX:cx,clientY:cy})); } catch(e){}
+                    try { el.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'})); } catch(e){}
+                    try { el.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:cx,clientY:cy})); } catch(e){}
+                    el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                    el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                    el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                    el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                    el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
                     return true;
                 } catch(e) { return false; }
             }
 
-            function pointerClick(el) {
+            function touchClick(el) {
+                if (!el) return false;
+                try {
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                    var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+                    el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch'}));
+                    try {
+                        var t = new Touch({identifier:Date.now(),target:el,clientX:cx,clientY:cy,pageX:cx+window.scrollX,pageY:cy+window.scrollY});
+                        el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,touches:[t],targetTouches:[t],changedTouches:[t]}));
+                        el.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[t]}));
+                    } catch(e) {}
+                    el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch'}));
+                    el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+                    return true;
+                } catch(e) { return false; }
+            }
+
+            function coordClick(el) {
                 if (!el) return false;
                 try {
                     var rect = el.getBoundingClientRect();
                     var cx = rect.left + rect.width / 2;
                     var cy = rect.top + rect.height / 2;
-                    var pDown = new PointerEvent('pointerdown', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, pointerId:1, pointerType:'touch'});
-                    el.dispatchEvent(pDown);
-                    var tStart = new TouchEvent('touchstart', {bubbles:true, cancelable:true, view:window});
-                    try { el.dispatchEvent(tStart); } catch(e) {}
-                    var pUp = new PointerEvent('pointerup', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, pointerId:1, pointerType:'touch'});
-                    el.dispatchEvent(pUp);
-                    var tEnd = new TouchEvent('touchend', {bubbles:true, cancelable:true, view:window});
-                    try { el.dispatchEvent(tEnd); } catch(e) {}
-                    el.click();
+                    var target = document.elementFromPoint(cx, cy);
+                    if (!target) target = el;
+                    target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                    target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                    target.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                    target.click();
                     return true;
                 } catch(e) { return false; }
             }
 
-            var btn = findLoginBtn();
-            if (btn) {
-                btn.click();
-                return 'CLICKED_NATIVE';
+            function nativeClick(el) {
+                if (!el) return false;
+                try { el.click(); return true; } catch(e) { return false; }
             }
-            return 'NOT_FOUND';
-        })();
-        """
-        var result = await executeJS(js)
-        if let result, result != "NOT_FOUND" {
-            return (true, "Login clicked via: \(result)")
-        }
 
-        let deepClickJS = """
-        (function() {
-            function findLoginBtn() {
-                var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], span[class*="btn"], div[class*="btn"]');
-                for (var i = 0; i < btns.length; i++) {
-                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                    if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin' ||
-                        text.indexOf('log in') !== -1 || text.indexOf('login') !== -1 || text.indexOf('sign in') !== -1) return btns[i];
+            function allClicks(el, label) {
+                if (!el) return null;
+                var preOp = getOpacity(el);
+                if (nativeClick(el)) {
+                    var postOp = getOpacity(el);
+                    if (postOp < preOp - 0.05) return label + ':NATIVE_CONFIRMED';
                 }
-                var submitBtn = document.querySelector('button[type="submit"]') || document.querySelector('input[type="submit"]');
-                return submitBtn;
+                if (humanClick(el)) {
+                    var postOp2 = getOpacity(el);
+                    if (postOp2 < preOp - 0.05) return label + ':HUMAN_CONFIRMED';
+                }
+                if (touchClick(el)) {
+                    var postOp3 = getOpacity(el);
+                    if (postOp3 < preOp - 0.05) return label + ':TOUCH_CONFIRMED';
+                }
+                if (coordClick(el)) return label + ':COORD';
+                return label + ':ALL_METHODS';
             }
-            var el = findLoginBtn();
-            if (!el) return 'NOT_FOUND';
-            el.focus();
-            var rect = el.getBoundingClientRect();
-            var cx = rect.left + rect.width / 2;
-            var cy = rect.top + rect.height / 2;
-            el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
-            el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
-            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
-            return 'DEEP_CLICK';
-        })();
-        """
-        result = await executeJS(deepClickJS)
-        if let result, result != "NOT_FOUND" {
-            return (true, "Login clicked via: \(result)")
-        }
 
-        let enterKeyJS = """
-        (function() {
-            var passwordField = document.querySelector('input[type="password"]');
-            if (passwordField) {
-                passwordField.focus();
-                passwordField.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-                passwordField.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-                passwordField.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-                return 'ENTER_ON_PASSWORD';
+            var loginTermsExact = ['log in','login','sign in','signin'];
+            var loginTermsPartial = ['log in','login','sign in','signin','submit','enter','go'];
+
+            // S1: Exact text match on all clickable elements
+            var allClickable = document.querySelectorAll('button, input[type="submit"], a, [role="button"], span, div, label');
+            for (var i = 0; i < allClickable.length; i++) {
+                var el = allClickable[i];
+                var text = (el.textContent || el.value || '').replace(/[ \t\n\r]+/g,' ').toLowerCase().trim();
+                if (text.length > 50) continue;
+                for (var t = 0; t < loginTermsExact.length; t++) {
+                    if (text === loginTermsExact[t]) {
+                        var r = allClicks(el, 'S1_EXACT_' + text);
+                        if (r) return r;
+                    }
+                }
             }
+
+            // S2: Partial text match on all clickable elements
+            for (var i = 0; i < allClickable.length; i++) {
+                var el = allClickable[i];
+                var text = (el.textContent || el.value || '').replace(/[ \t\n\r]+/g,' ').toLowerCase().trim();
+                if (text.length > 80) continue;
+                for (var t = 0; t < loginTermsPartial.length; t++) {
+                    if (text.indexOf(loginTermsPartial[t]) !== -1 && text.length < 30) {
+                        var r = allClicks(el, 'S2_PARTIAL_' + loginTermsPartial[t]);
+                        if (r) return r;
+                    }
+                }
+            }
+
+            // S3: Class/ID based selectors common on Joe Fortune mirrors
+            var classSelectors = [
+                '[class*="login"][class*="btn"]','[class*="login"][class*="button"]',
+                '[class*="sign"][class*="btn"]','[class*="sign"][class*="button"]',
+                '[class*="submit"][class*="btn"]','[class*="submit"][class*="button"]',
+                '[class*="loginBtn"]','[class*="login-btn"]','[class*="login_btn"]',
+                '[class*="signInBtn"]','[class*="signin-btn"]','[class*="signin_btn"]',
+                '[class*="btn-login"]','[class*="btn-signin"]','[class*="btn-submit"]',
+                '[class*="button-login"]','[class*="button-signin"]',
+                '[id*="login"][id*="btn"]','[id*="login"][id*="button"]',
+                '[id*="signin"][id*="btn"]','[id*="submit"][id*="btn"]',
+                '#loginButton','#loginBtn','#login-button','#login-btn',
+                '#signInButton','#signInBtn','#submitBtn','#submitButton',
+                '#btn-login','#btn-signin','#btn-submit',
+                'button.login','button.signin','button.submit',
+                '[data-action="login"]','[data-action="signin"]','[data-action="submit"]',
+                '[data-type="login"]','[data-type="submit"]',
+                '[data-testid*="login"]','[data-testid*="submit"]',
+                '[data-qa*="login"]','[data-qa*="submit"]',
+                '[aria-label*="Log In"]','[aria-label*="Login"]','[aria-label*="Sign In"]',
+                '[aria-label*="log in"]','[aria-label*="login"]','[aria-label*="sign in"]',
+                '[title*="Log In"]','[title*="Login"]','[title*="Sign In"]'
+            ];
+            for (var s = 0; s < classSelectors.length; s++) {
+                try {
+                    var el = document.querySelector(classSelectors[s]);
+                    if (el) {
+                        var r = allClicks(el, 'S3_CLASS_' + classSelectors[s].substring(0,30));
+                        if (r) return r;
+                    }
+                } catch(e) {}
+            }
+
+            // S4: button[type=submit] or input[type=submit] inside form with password
+            var forms = document.querySelectorAll('form');
+            for (var f = 0; f < forms.length; f++) {
+                if (forms[f].querySelector('input[type="password"]')) {
+                    var formBtn = forms[f].querySelector('button[type="submit"]') || forms[f].querySelector('input[type="submit"]') || forms[f].querySelector('button');
+                    if (formBtn) {
+                        var r = allClicks(formBtn, 'S4_FORM_BTN');
+                        if (r) return r;
+                    }
+                }
+            }
+
+            // S5: Any button[type=submit] or input[type=submit] on page
+            var submitBtn = document.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                var r = allClicks(submitBtn, 'S5_SUBMIT_BTN');
+                if (r) return r;
+            }
+            var submitInput = document.querySelector('input[type="submit"]');
+            if (submitInput) {
+                var r = allClicks(submitInput, 'S5_SUBMIT_INPUT');
+                if (r) return r;
+            }
+
+            // S6: Last resort — any button near password field
+            var passField = document.querySelector('input[type="password"]');
+            if (passField) {
+                var parent = passField.parentElement;
+                for (var depth = 0; depth < 6 && parent; depth++) {
+                    var btns = parent.querySelectorAll('button, [role="button"], a.btn, input[type="submit"]');
+                    for (var b = 0; b < btns.length; b++) {
+                        var text = (btns[b].textContent || btns[b].value || '').toLowerCase().trim();
+                        if (btns[b].tagName === 'INPUT' && btns[b].type === 'password') continue;
+                        if (text.length < 40) {
+                            var r = allClicks(btns[b], 'S6_NEAR_PASS_' + text.substring(0,15));
+                            if (r) return r;
+                        }
+                    }
+                    parent = parent.parentElement;
+                }
+            }
+
             return 'NOT_FOUND';
         })();
         """
-        result = await executeJS(enterKeyJS)
+        var result = await executeJS(megaClickJS)
         if let result, result != "NOT_FOUND" {
-            return (true, "Login submitted via: \(result)")
+            return (true, "Login clicked: \(result)")
+        }
+
+        let enterResult = await pressEnterOnPasswordField()
+        if enterResult.success {
+            return (true, "Login via Enter key after button not found")
         }
 
         let formSubmitJS = """
@@ -437,18 +528,61 @@ class LoginSiteWebSession: NSObject {
             var forms = document.querySelectorAll('form');
             for (var i = 0; i < forms.length; i++) {
                 var hasPassword = forms[i].querySelector('input[type="password"]');
-                if (hasPassword) { forms[i].submit(); return 'FORM_WITH_PASSWORD'; }
+                if (hasPassword) {
+                    try { forms[i].requestSubmit(); return 'REQUEST_SUBMIT_FORM'; } catch(e) {}
+                    try { forms[i].submit(); return 'SUBMIT_FORM'; } catch(e) {}
+                }
             }
-            if (forms.length > 0) { forms[0].submit(); return 'FIRST_FORM'; }
+            if (forms.length > 0) {
+                try { forms[0].requestSubmit(); return 'REQUEST_SUBMIT_FIRST'; } catch(e) {}
+                try { forms[0].submit(); return 'SUBMIT_FIRST'; } catch(e) {}
+            }
             return 'NOT_FOUND';
         })();
         """
         result = await executeJS(formSubmitJS)
         if let result, result != "NOT_FOUND" {
-            return (true, "Login submitted via: \(result)")
+            return (true, "Login via form submit: \(result)")
         }
 
         return (false, "Login button not found after all strategies")
+    }
+
+    func verifyClickRegistered(timeout: TimeInterval = 3) async -> (registered: Bool, detail: String) {
+        let js = """
+        (function() {
+            var terms = ['log in','login','sign in','signin'];
+            var btns = document.querySelectorAll('button, input[type="submit"], a, [role="button"]');
+            for (var i = 0; i < btns.length; i++) {
+                var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                var isLoginBtn = false;
+                for (var t = 0; t < terms.length; t++) { if (text.indexOf(terms[t]) !== -1 && text.length < 30) isLoginBtn = true; }
+                if (!isLoginBtn && btns[i].type !== 'submit') continue;
+                var style = window.getComputedStyle(btns[i]);
+                var opacity = parseFloat(style.opacity);
+                var disabled = btns[i].disabled;
+                var pointer = style.pointerEvents;
+                var loading = btns[i].classList.toString().toLowerCase();
+                var hasSpinner = btns[i].querySelector('.spinner, .loading, [class*="spin"], [class*="load"]') !== null;
+                if (opacity < 0.85 || disabled || pointer === 'none' || loading.indexOf('loading') !== -1 || loading.indexOf('disabled') !== -1 || hasSpinner) {
+                    return JSON.stringify({registered:true, opacity:opacity, disabled:disabled, pointer:pointer, hasSpinner:hasSpinner, text:text});
+                }
+            }
+            return JSON.stringify({registered:false});
+        })();
+        """
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if let raw = await executeJS(js),
+               let data = raw.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let registered = json["registered"] as? Bool, registered {
+                let opacity = json["opacity"] as? Double ?? 1.0
+                return (true, "opacity:\(String(format: "%.2f", opacity))")
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        return (false, "Button still opaque after \(Int(timeout))s")
     }
 
     func pressEnterOnPasswordField() async -> (success: Bool, detail: String) {

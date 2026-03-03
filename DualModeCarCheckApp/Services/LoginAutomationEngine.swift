@@ -203,21 +203,35 @@ class LoginAutomationEngine {
             try? await Task.sleep(for: .milliseconds(500))
 
             var submitResult: (success: Bool, detail: String) = (false, "")
+            var clickVerified = false
             for submitAttempt in 1...4 {
                 submitResult = await session.clickLoginButton()
                 if submitResult.success {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit: \(submitResult.detail)", level: .success))
-                    break
-                }
-                if submitAttempt == 2 {
-                    let enterResult = await session.pressEnterOnPasswordField()
-                    if enterResult.success {
-                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit via Enter key: \(enterResult.detail)", level: .success))
-                        submitResult = enterResult
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt): \(submitResult.detail)", level: .info))
+
+                    let verification = await session.verifyClickRegistered(timeout: 2)
+                    if verification.registered {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): click VERIFIED registered (\(verification.detail))", level: .success))
+                        clickVerified = true
                         break
+                    } else {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): click sent but NOT verified (\(verification.detail)) — retrying with different method", level: .warning))
+                        if submitAttempt == 2 {
+                            let enterResult = await session.pressEnterOnPasswordField()
+                            if enterResult.success {
+                                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): fallback Enter key pressed", level: .info))
+                                let enterVerify = await session.verifyClickRegistered(timeout: 2)
+                                if enterVerify.registered {
+                                    clickVerified = true
+                                    submitResult = enterResult
+                                    break
+                                }
+                            }
+                        }
                     }
+                } else {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt)/4 failed: \(submitResult.detail)", level: .warning))
                 }
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt)/4 failed: \(submitResult.detail)", level: .warning))
                 if submitAttempt < 4 {
                     try? await Task.sleep(for: .seconds(Double(submitAttempt)))
                     await session.dismissCookieNotices()
@@ -225,7 +239,7 @@ class LoginAutomationEngine {
             }
             guard submitResult.success else {
                 if cycle == 1 {
-                    failAttempt(attempt, message: "LOGIN SUBMIT FAILED after 3 attempts: \(submitResult.detail)")
+                    failAttempt(attempt, message: "LOGIN SUBMIT FAILED after 4 attempts: \(submitResult.detail)")
                     await captureDebugScreenshot(session: session, attempt: attempt, step: "submit_failed", note: "Submit button not found", autoResult: .fail)
                     return .connectionFailure
                 }
@@ -233,11 +247,13 @@ class LoginAutomationEngine {
                 break
             }
 
-            let postClickCheck = await session.checkLoginButtonReadiness()
-            if !postClickCheck.isReady {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button debossed (opacity:\(String(format: "%.2f", postClickCheck.opacity))) — click registered, waiting for response", level: .success))
-            } else {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still opaque after click — may not have registered", level: .warning))
+            if !clickVerified {
+                let postClickCheck = await session.checkLoginButtonReadiness()
+                if !postClickCheck.isReady {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button debossed (opacity:\(String(format: "%.2f", postClickCheck.opacity))) — click registered via readiness check", level: .success))
+                } else {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still opaque — click may not have registered, proceeding anyway", level: .warning))
+                }
             }
 
             let preSubmitURL = await session.getCurrentURL()
