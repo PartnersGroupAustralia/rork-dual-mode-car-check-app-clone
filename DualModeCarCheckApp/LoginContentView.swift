@@ -14,6 +14,7 @@ struct LoginContentView: View {
                 NavigationStack {
                     LoginDashboardContentView(vm: vm)
                 }
+                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
             }
 
             Tab("Credentials", systemImage: "person.text.rectangle") {
@@ -25,18 +26,21 @@ struct LoginContentView: View {
                             }
                         }
                 }
+                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
             }
 
             Tab("Working", systemImage: "checkmark.shield.fill") {
                 NavigationStack {
                     LoginWorkingListView(vm: vm)
                 }
+                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
             }
 
             Tab("Sessions", systemImage: "rectangle.stack") {
                 NavigationStack {
                     LoginSessionMonitorContentView(vm: vm)
                 }
+                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
             }
 
             if vm.debugMode {
@@ -44,6 +48,7 @@ struct LoginContentView: View {
                     NavigationStack {
                         LoginDebugScreenshotsView(vm: vm)
                     }
+                    .overlay(alignment: .bottomTrailing) { IntroPageLink() }
                 }
             }
 
@@ -51,6 +56,7 @@ struct LoginContentView: View {
                 NavigationStack {
                     LoginMoreMenuView(vm: vm)
                 }
+                .overlay(alignment: .bottomTrailing) { IntroPageLink() }
             }
         }
         .tint(accentColor)
@@ -108,6 +114,7 @@ struct LoginDashboardContentView: View {
         ScrollView {
             VStack(spacing: 20) {
                 statusHeader
+                dashboardActionButtons
                 if vm.isRunning {
                     testingBanner
                     queueControls
@@ -177,36 +184,12 @@ struct LoginDashboardContentView: View {
     }
 
     private var joeIgnitionToggle: some View {
-        HStack(spacing: 0) {
-            Button {
-                withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = false }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "suit.spade.fill")
-                    Text("Joe").font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(!vm.isIgnitionMode ? Color.green : Color(.tertiarySystemFill))
-                .foregroundStyle(!vm.isIgnitionMode ? .white : .secondary)
+        TriModeSwitcher(siteMode: vm.siteMode) { mode in
+            withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
+                vm.setSiteMode(mode)
             }
-            .clipShape(.rect(cornerRadii: .init(topLeading: 10, bottomLeading: 10)))
-
-            Button {
-                withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = true }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "flame.fill")
-                    Text("Ignition").font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(vm.isIgnitionMode ? Color.orange : Color(.tertiarySystemFill))
-                .foregroundStyle(vm.isIgnitionMode ? .white : .secondary)
-            }
-            .clipShape(.rect(cornerRadii: .init(bottomTrailing: 10, topTrailing: 10)))
         }
-        .sensoryFeedback(.impact(weight: .medium), trigger: vm.isIgnitionMode)
+        .sensoryFeedback(.impact(weight: .medium), trigger: vm.siteMode.rawValue)
     }
 
     private var connectionBadge: some View {
@@ -433,6 +416,41 @@ struct LoginDashboardContentView: View {
             }
             ForEach(vm.unsureCredentials) { cred in
                 LoginCredentialRow(credential: cred, accentColor: .yellow)
+            }
+        }
+    }
+
+    private var dashboardActionButtons: some View {
+        HStack(spacing: 10) {
+            Button {
+                vm.testAllUntested()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.fill")
+                    Text("Test All Untested")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(vm.isRunning ? accentColor.opacity(0.3) : accentColor)
+                .foregroundStyle(.white)
+                .clipShape(.rect(cornerRadius: 12))
+            }
+            .disabled(vm.isRunning || vm.untestedCredentials.isEmpty)
+
+            Button {
+                vm.testAllUntested()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "checklist")
+                    Text("Select Testing")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color(.tertiarySystemFill))
+                .foregroundStyle(.primary)
+                .clipShape(.rect(cornerRadius: 12))
             }
         }
     }
@@ -1543,41 +1561,24 @@ struct LoginSettingsContentView: View {
 
     private var siteToggleSection: some View {
         Section {
-            HStack(spacing: 0) {
-                Button {
-                    withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = false }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "suit.spade.fill")
-                        Text("Joe Fortune").font(.subheadline.bold())
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(!vm.isIgnitionMode ? Color.green : Color(.tertiarySystemFill))
-                    .foregroundStyle(!vm.isIgnitionMode ? .white : .secondary)
+            TriModeSwitcher(siteMode: vm.siteMode) { mode in
+                withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
+                    vm.setSiteMode(mode)
                 }
-                .clipShape(.rect(cornerRadii: .init(topLeading: 10, bottomLeading: 10)))
-
-                Button {
-                    withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = true }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "flame.fill")
-                        Text("Ignition").font(.subheadline.bold())
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(vm.isIgnitionMode ? Color.orange : Color(.tertiarySystemFill))
-                    .foregroundStyle(vm.isIgnitionMode ? .white : .secondary)
-                }
-                .clipShape(.rect(cornerRadii: .init(bottomTrailing: 10, topTrailing: 10)))
             }
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            .sensoryFeedback(.impact(weight: .medium), trigger: vm.isIgnitionMode)
+            .sensoryFeedback(.impact(weight: .medium), trigger: vm.siteMode.rawValue)
         } header: {
             Text("Site Mode")
         } footer: {
-            Text(vm.isIgnitionMode ? "Ignition mode — dark theme active. URLs rotate through Ignition domains." : "Joe mode — URLs rotate through Joe Fortune domains.")
+            switch vm.siteMode {
+            case .joe:
+                Text("Joe mode — URLs rotate through Joe Fortune domains.")
+            case .dual:
+                Text("Dual mode — half sessions test Joe Fortune, half test Ignition simultaneously.")
+            case .ignition:
+                Text("Ignition mode — dark theme active. URLs rotate through Ignition domains.")
+            }
         }
     }
 
@@ -1595,22 +1596,19 @@ struct LoginSettingsContentView: View {
                 .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
             }
 
-            Toggle(isOn: $vm.dualSiteMode) {
+            Button {
+                vm.testAllUntested()
+            } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "arrow.triangle.branch").foregroundStyle(.cyan)
+                    Image(systemName: "checklist").foregroundStyle(.blue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Dual-Site Mode").font(.body)
-                        Text("Test Joe Fortune + Ignition simultaneously").font(.caption2).foregroundStyle(.secondary)
+                        Text("Select Testing").font(.body)
+                        Text("Choose specific credentials to test").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
-            .tint(.cyan)
         } header: {
             Text("Quick Actions")
-        } footer: {
-            if vm.dualSiteMode {
-                Text("Half of sessions test Joe Fortune, half test Ignition. Credentials are distributed across both sites.")
-            }
         }
     }
 

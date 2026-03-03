@@ -120,6 +120,10 @@ class LoginAutomationEngine {
         let pageTitle = await session.getPageTitle()
         attempt.logs.append(PPSRLogEntry(message: "Page loaded: \"\(pageTitle)\"", level: .info))
 
+        await session.dismissCookieNotices()
+        attempt.logs.append(PPSRLogEntry(message: "Cookie/consent notices dismissed", level: .info))
+        try? await Task.sleep(for: .milliseconds(300))
+
         let preLoginContent = await session.getPageContent()
 
         let verification = await session.verifyLoginFieldsExist()
@@ -138,6 +142,10 @@ class LoginAutomationEngine {
         } else {
             attempt.logs.append(PPSRLogEntry(message: "Both login fields verified present and enabled", level: .success))
         }
+
+        await session.preSaveCredentials(username: attempt.credential.username, password: attempt.credential.password)
+        attempt.logs.append(PPSRLogEntry(message: "Pre-saved credentials (autofill simulation)", level: .info))
+        try? await Task.sleep(for: .milliseconds(300))
 
         advanceTo(.fillingCredentials, attempt: attempt, message: "Filling username: \(attempt.credential.username)")
         let usernameResult = await retryFill(session: session, attempt: attempt, fieldName: "Username") {
@@ -195,15 +203,24 @@ class LoginAutomationEngine {
             try? await Task.sleep(for: .milliseconds(500))
 
             var submitResult: (success: Bool, detail: String) = (false, "")
-            for submitAttempt in 1...3 {
+            for submitAttempt in 1...4 {
                 submitResult = await session.clickLoginButton()
                 if submitResult.success {
                     attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit: \(submitResult.detail)", level: .success))
                     break
                 }
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt)/3 failed: \(submitResult.detail)", level: .warning))
-                if submitAttempt < 3 {
+                if submitAttempt == 2 {
+                    let enterResult = await session.pressEnterOnPasswordField()
+                    if enterResult.success {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit via Enter key: \(enterResult.detail)", level: .success))
+                        submitResult = enterResult
+                        break
+                    }
+                }
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt)/4 failed: \(submitResult.detail)", level: .warning))
+                if submitAttempt < 4 {
                     try? await Task.sleep(for: .seconds(Double(submitAttempt)))
+                    await session.dismissCookieNotices()
                 }
             }
             guard submitResult.success else {
@@ -214,6 +231,13 @@ class LoginAutomationEngine {
                 }
                 attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit failed — using last evaluation", level: .warning))
                 break
+            }
+
+            let postClickCheck = await session.checkLoginButtonReadiness()
+            if !postClickCheck.isReady {
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button debossed (opacity:\(String(format: "%.2f", postClickCheck.opacity))) — click registered, waiting for response", level: .success))
+            } else {
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still opaque after click — may not have registered", level: .warning))
             }
 
             let preSubmitURL = await session.getCurrentURL()

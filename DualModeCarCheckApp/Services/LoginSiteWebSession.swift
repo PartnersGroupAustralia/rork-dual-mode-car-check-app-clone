@@ -307,55 +307,255 @@ class LoginSiteWebSession: NSObject {
     func clickLoginButton() async -> (success: Bool, detail: String) {
         let js = """
         (function() {
-            var strategies = [
-                function() {
-                    var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin') {
-                            btns[i].click(); return 'CLICKED_EXACT';
-                        }
-                    }
-                    return null;
-                },
-                function() {
-                    var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('log in') !== -1 || text.indexOf('login') !== -1 || text.indexOf('sign in') !== -1) {
-                            btns[i].click(); return 'CLICKED_PARTIAL';
-                        }
-                    }
-                    return null;
-                },
-                function() {
-                    var btn = document.querySelector('button[type="submit"]');
-                    if (btn) { btn.click(); return 'CLICKED_SUBMIT_BTN'; }
-                    return null;
-                },
-                function() {
-                    var btn = document.querySelector('input[type="submit"]');
-                    if (btn) { btn.click(); return 'CLICKED_SUBMIT_INPUT'; }
-                    return null;
-                },
-                function() {
-                    var forms = document.querySelectorAll('form');
-                    if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
-                    return null;
+            function findLoginBtn() {
+                var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], a[href*="login"], span[class*="btn"], div[class*="btn"]');
+                for (var i = 0; i < btns.length; i++) {
+                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                    if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin') return btns[i];
                 }
-            ];
-            for (var i = 0; i < strategies.length; i++) {
-                var result = strategies[i]();
-                if (result) return result;
+                for (var i = 0; i < btns.length; i++) {
+                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                    if (text.indexOf('log in') !== -1 || text.indexOf('login') !== -1 || text.indexOf('sign in') !== -1) return btns[i];
+                }
+                var submitBtn = document.querySelector('button[type="submit"]');
+                if (submitBtn) return submitBtn;
+                var submitInput = document.querySelector('input[type="submit"]');
+                if (submitInput) return submitInput;
+                return null;
+            }
+
+            function deepClick(el) {
+                if (!el) return false;
+                try {
+                    el.focus();
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width / 2;
+                    var cy = rect.top + rect.height / 2;
+                    var mdEvent = new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
+                    el.dispatchEvent(mdEvent);
+                    var muEvent = new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
+                    el.dispatchEvent(muEvent);
+                    var clickEvent = new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy});
+                    el.dispatchEvent(clickEvent);
+                    return true;
+                } catch(e) { return false; }
+            }
+
+            function pointerClick(el) {
+                if (!el) return false;
+                try {
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width / 2;
+                    var cy = rect.top + rect.height / 2;
+                    var pDown = new PointerEvent('pointerdown', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, pointerId:1, pointerType:'touch'});
+                    el.dispatchEvent(pDown);
+                    var tStart = new TouchEvent('touchstart', {bubbles:true, cancelable:true, view:window});
+                    try { el.dispatchEvent(tStart); } catch(e) {}
+                    var pUp = new PointerEvent('pointerup', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, pointerId:1, pointerType:'touch'});
+                    el.dispatchEvent(pUp);
+                    var tEnd = new TouchEvent('touchend', {bubbles:true, cancelable:true, view:window});
+                    try { el.dispatchEvent(tEnd); } catch(e) {}
+                    el.click();
+                    return true;
+                } catch(e) { return false; }
+            }
+
+            var btn = findLoginBtn();
+            if (btn) {
+                btn.click();
+                return 'CLICKED_NATIVE';
             }
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(js)
+        var result = await executeJS(js)
         if let result, result != "NOT_FOUND" {
-            return (true, "Login clicked via strategy: \(result)")
+            return (true, "Login clicked via: \(result)")
         }
-        return (false, "Login button not found")
+
+        let deepClickJS = """
+        (function() {
+            function findLoginBtn() {
+                var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], span[class*="btn"], div[class*="btn"]');
+                for (var i = 0; i < btns.length; i++) {
+                    var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
+                    if (text === 'log in' || text === 'login' || text === 'sign in' || text === 'signin' ||
+                        text.indexOf('log in') !== -1 || text.indexOf('login') !== -1 || text.indexOf('sign in') !== -1) return btns[i];
+                }
+                var submitBtn = document.querySelector('button[type="submit"]') || document.querySelector('input[type="submit"]');
+                return submitBtn;
+            }
+            var el = findLoginBtn();
+            if (!el) return 'NOT_FOUND';
+            el.focus();
+            var rect = el.getBoundingClientRect();
+            var cx = rect.left + rect.width / 2;
+            var cy = rect.top + rect.height / 2;
+            el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+            el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+            return 'DEEP_CLICK';
+        })();
+        """
+        result = await executeJS(deepClickJS)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Login clicked via: \(result)")
+        }
+
+        let enterKeyJS = """
+        (function() {
+            var passwordField = document.querySelector('input[type="password"]');
+            if (passwordField) {
+                passwordField.focus();
+                passwordField.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                passwordField.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                passwordField.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                return 'ENTER_ON_PASSWORD';
+            }
+            return 'NOT_FOUND';
+        })();
+        """
+        result = await executeJS(enterKeyJS)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Login submitted via: \(result)")
+        }
+
+        let formSubmitJS = """
+        (function() {
+            var forms = document.querySelectorAll('form');
+            for (var i = 0; i < forms.length; i++) {
+                var hasPassword = forms[i].querySelector('input[type="password"]');
+                if (hasPassword) { forms[i].submit(); return 'FORM_WITH_PASSWORD'; }
+            }
+            if (forms.length > 0) { forms[0].submit(); return 'FIRST_FORM'; }
+            return 'NOT_FOUND';
+        })();
+        """
+        result = await executeJS(formSubmitJS)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Login submitted via: \(result)")
+        }
+
+        return (false, "Login button not found after all strategies")
+    }
+
+    func pressEnterOnPasswordField() async -> (success: Bool, detail: String) {
+        let js = """
+        (function() {
+            var passwordField = document.querySelector('input[type="password"]');
+            if (!passwordField) return 'NO_PASSWORD_FIELD';
+            passwordField.focus();
+            passwordField.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+            passwordField.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+            passwordField.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            return 'ENTER_PRESSED';
+        })();
+        """
+        let result = await executeJS(js)
+        if result == "ENTER_PRESSED" {
+            return (true, "Enter key pressed on password field")
+        }
+        return (false, "Could not press enter: \(result ?? "nil")")
+    }
+
+    func dismissCookieNotices() async {
+        let js = """
+        (function() {
+            var dismissed = 0;
+            var selectors = [
+                '[class*="cookie"] button', '[id*="cookie"] button',
+                '[class*="consent"] button', '[id*="consent"] button',
+                '[class*="Cookie"] button', '[id*="Cookie"] button',
+                '[class*="gdpr"] button', '[id*="gdpr"] button',
+                '[class*="notice"] button[class*="accept"]',
+                '[class*="notice"] button[class*="close"]',
+                '[class*="banner"] button[class*="accept"]',
+                '[class*="banner"] button[class*="close"]',
+                '[aria-label*="cookie"]', '[aria-label*="Cookie"]',
+                '[aria-label*="consent"]', '[aria-label*="accept"]',
+                'button[class*="accept"]', 'a[class*="accept"]',
+                'button[id*="accept"]', 'a[id*="accept"]',
+                '.cc-dismiss', '.cc-allow', '.cc-btn',
+                '#onetrust-accept-btn-handler',
+                '.cookie-notice .btn', '.cookie-bar .btn',
+                '[data-cookie-accept]', '[data-consent-accept]'
+            ];
+            var acceptTerms = ['accept', 'agree', 'ok', 'got it', 'i agree', 'allow', 'dismiss',
+                               'close', 'continue', 'yes', 'confirm', 'understood', 'i understand'];
+            for (var s = 0; s < selectors.length; s++) {
+                var els = document.querySelectorAll(selectors[s]);
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || els[i].value || '').toLowerCase().trim();
+                    for (var a = 0; a < acceptTerms.length; a++) {
+                        if (text.indexOf(acceptTerms[a]) !== -1 || text.length < 20) {
+                            try { els[i].click(); dismissed++; } catch(e) {}
+                            break;
+                        }
+                    }
+                }
+            }
+            var overlays = document.querySelectorAll('[class*="cookie-overlay"], [class*="consent-overlay"], [class*="cookie-backdrop"]');
+            for (var o = 0; o < overlays.length; o++) {
+                try { overlays[o].style.display = 'none'; dismissed++; } catch(e) {}
+            }
+            var modals = document.querySelectorAll('[class*="cookie-modal"], [class*="consent-modal"], [class*="cookie-popup"], [class*="cookie-banner"]');
+            for (var m = 0; m < modals.length; m++) {
+                try { modals[m].style.display = 'none'; dismissed++; } catch(e) {}
+            }
+            return dismissed;
+        })();
+        """
+        _ = await executeJS(js)
+    }
+
+    func preSaveCredentials(username: String, password: String) async {
+        let escapedUser = username.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let escapedPass = password.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = """
+        (function() {
+            var emailFields = document.querySelectorAll('input[type="email"], input[type="text"], input[autocomplete="email"], input[autocomplete="username"]');
+            var passFields = document.querySelectorAll('input[type="password"]');
+            for (var i = 0; i < emailFields.length; i++) {
+                var el = emailFields[i];
+                try {
+                    el.focus();
+                    el.click();
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                    var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new MouseEvent('click', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new Event('focus', {bubbles:true}));
+                    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                    if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escapedUser)'); }
+                    else { el.value = '\(escapedUser)'; }
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    el.dispatchEvent(new Event('change', {bubbles:true}));
+                } catch(e) {}
+            }
+            for (var i = 0; i < passFields.length; i++) {
+                var el = passFields[i];
+                try {
+                    el.focus();
+                    el.click();
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                    var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new MouseEvent('click', {bubbles:true,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new Event('focus', {bubbles:true}));
+                    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                    if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escapedPass)'); }
+                    else { el.value = '\(escapedPass)'; }
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    el.dispatchEvent(new Event('change', {bubbles:true}));
+                } catch(e) {}
+            }
+        })();
+        """
+        _ = await executeJS(js)
     }
 
     func waitForLoginButtonReady(timeout: TimeInterval = 15) async -> (ready: Bool, timedOut: Bool) {

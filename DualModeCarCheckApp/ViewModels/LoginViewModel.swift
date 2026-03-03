@@ -31,7 +31,14 @@ class LoginViewModel {
     var fingerprintHistory: [FingerprintValidationService.FingerprintScore] { FingerprintValidationService.shared.scoreHistory }
     var lastFingerprintScore: FingerprintValidationService.FingerprintScore? { FingerprintValidationService.shared.lastScore }
     var dualSiteMode: Bool = false
+    var siteMode: SiteMode = .joe
     var savedCropRect: CGRect? = nil
+
+    nonisolated enum SiteMode: String, CaseIterable, Sendable {
+        case joe = "Joe"
+        case dual = "Dual"
+        case ignition = "Ignition"
+    }
 
     let urlRotation = LoginURLRotationService.shared
     let proxyService = ProxyRotationService.shared
@@ -45,6 +52,21 @@ class LoginViewModel {
             targetSite = newValue ? .ignition : .joefortune
             persistSettings()
         }
+    }
+
+    func setSiteMode(_ mode: SiteMode) {
+        siteMode = mode
+        switch mode {
+        case .joe:
+            isIgnitionMode = false
+            dualSiteMode = false
+        case .dual:
+            dualSiteMode = true
+        case .ignition:
+            isIgnitionMode = true
+            dualSiteMode = false
+        }
+        persistSettings()
     }
 
     var effectiveColorScheme: ColorScheme? {
@@ -421,6 +443,8 @@ class LoginViewModel {
             credential.recordResult(success: false, duration: duration, error: attempt.errorMessage, detail: "permanently disabled")
             log("\(credential.username) — PERM DISABLED", level: .error)
             consecutiveUnusualFailures = 0
+            blacklistService.addToBlacklist(credential.username, reason: "Auto: perm disabled")
+            log("\(credential.username) — auto-added to blacklist (perm disabled)", level: .warning)
 
         case .tempDisabled:
             credential.recordResult(success: false, duration: duration, error: attempt.errorMessage, detail: "temporarily disabled")
