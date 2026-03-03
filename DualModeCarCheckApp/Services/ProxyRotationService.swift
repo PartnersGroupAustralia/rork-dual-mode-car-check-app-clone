@@ -272,42 +272,68 @@ class ProxyRotationService {
     }
 
     func testAllProxies(forIgnition: Bool = false) async {
+        let maxConcurrent = 5
         if forIgnition {
-            await withTaskGroup(of: (Int, Bool).self) { group in
-                for i in ignitionProxies.indices {
-                    let proxy = ignitionProxies[i]
+            let proxySnapshot = ignitionProxies
+            await withTaskGroup(of: (UUID, Bool).self) { group in
+                var launched = 0
+                for proxy in proxySnapshot {
+                    if launched >= maxConcurrent {
+                        if let result = await group.next() {
+                            applyTestResult(result, forIgnition: true)
+                        }
+                    }
                     group.addTask {
                         let working = await self.testSingleProxy(proxy)
-                        return (i, working)
+                        return (proxy.id, working)
                     }
+                    launched += 1
                 }
-                for await (index, working) in group {
-                    if index < ignitionProxies.count {
-                        ignitionProxies[index].isWorking = working
-                        ignitionProxies[index].lastTested = Date()
-                        if working { ignitionProxies[index].failCount = 0 }
-                    }
+                for await result in group {
+                    applyTestResult(result, forIgnition: true)
                 }
             }
             persistIgnitionProxies()
         } else {
-            await withTaskGroup(of: (Int, Bool).self) { group in
-                for i in savedProxies.indices {
-                    let proxy = savedProxies[i]
+            let proxySnapshot = savedProxies
+            await withTaskGroup(of: (UUID, Bool).self) { group in
+                var launched = 0
+                for proxy in proxySnapshot {
+                    if launched >= maxConcurrent {
+                        if let result = await group.next() {
+                            applyTestResult(result, forIgnition: false)
+                        }
+                    }
                     group.addTask {
                         let working = await self.testSingleProxy(proxy)
-                        return (i, working)
+                        return (proxy.id, working)
                     }
+                    launched += 1
                 }
-                for await (index, working) in group {
-                    if index < savedProxies.count {
-                        savedProxies[index].isWorking = working
-                        savedProxies[index].lastTested = Date()
-                        if working { savedProxies[index].failCount = 0 }
-                    }
+                for await result in group {
+                    applyTestResult(result, forIgnition: false)
                 }
             }
             persistProxies()
+        }
+    }
+
+    private func applyTestResult(_ result: (UUID, Bool), forIgnition: Bool) {
+        let (proxyId, working) = result
+        if forIgnition {
+            if let idx = ignitionProxies.firstIndex(where: { $0.id == proxyId }) {
+                ignitionProxies[idx].isWorking = working
+                ignitionProxies[idx].lastTested = Date()
+                if working { ignitionProxies[idx].failCount = 0 }
+                else { ignitionProxies[idx].failCount += 1 }
+            }
+        } else {
+            if let idx = savedProxies.firstIndex(where: { $0.id == proxyId }) {
+                savedProxies[idx].isWorking = working
+                savedProxies[idx].lastTested = Date()
+                if working { savedProxies[idx].failCount = 0 }
+                else { savedProxies[idx].failCount += 1 }
+            }
         }
     }
 
@@ -315,8 +341,9 @@ class ProxyRotationService {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 12
         config.timeoutIntervalForResource = 15
+
         var proxyDict: [String: Any] = [
-            "SOCKSEnable": true,
+            "SOCKSEnable": 1,
             "SOCKSProxy": proxy.host,
             "SOCKSPort": proxy.port,
         ]
@@ -328,8 +355,8 @@ class ProxyRotationService {
         defer { session.invalidateAndCancel() }
 
         let testURLs = [
-            "https://httpbin.org/ip",
             "https://api.ipify.org?format=json",
+            "https://httpbin.org/ip",
             "https://ifconfig.me/ip"
         ]
 
@@ -339,8 +366,9 @@ class ProxyRotationService {
                 var request = URLRequest(url: url)
                 request.httpMethod = "GET"
                 request.timeoutInterval = 10
-                let (_, response) = try await session.data(for: request)
-                if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
                     return true
                 }
             } catch {

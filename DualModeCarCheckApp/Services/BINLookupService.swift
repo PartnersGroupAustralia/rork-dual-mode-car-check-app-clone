@@ -29,6 +29,11 @@ actor BINLookupService {
     static let shared = BINLookupService()
     private var cache: [String: PPSRBINData] = [:]
 
+    private let lookupURLs: [String] = [
+        "https://api.freebinchecker.com/bin/",
+        "https://lookup.binlist.net/",
+    ]
+
     func lookup(bin: String) async -> PPSRBINData {
         let prefix = String(bin.prefix(6))
         if let cached = cache[prefix] {
@@ -37,38 +42,45 @@ actor BINLookupService {
 
         let data = PPSRBINData(bin: prefix)
 
-        guard let url = URL(string: "https://api.freebinchecker.com/bin/\(prefix)") else {
-            cache[prefix] = data
-            return data
-        }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
 
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 10
-            let (responseData, response) = try await URLSession.shared.data(for: request)
+        for baseURL in lookupURLs {
+            guard let url = URL(string: "\(baseURL)\(prefix)") else { continue }
 
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            do {
+                var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                let (responseData, response) = try await session.data(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200, !responseData.isEmpty else {
+                    continue
+                }
+
+                let decoded = try JSONDecoder().decode(BINAPIResponse.self, from: responseData)
+
+                await MainActor.run {
+                    data.scheme = decoded.card?.scheme ?? ""
+                    data.type = decoded.card?.type ?? ""
+                    data.category = decoded.card?.category ?? ""
+                    data.issuer = decoded.issuer?.name ?? ""
+                    data.country = decoded.country?.name ?? ""
+                    data.countryCode = decoded.country?.alpha_2_code ?? ""
+                    data.isLoaded = true
+                }
+
                 cache[prefix] = data
                 return data
+            } catch {
+                continue
             }
-
-            let decoded = try JSONDecoder().decode(BINAPIResponse.self, from: responseData)
-
-            await MainActor.run {
-                data.scheme = decoded.card?.scheme ?? ""
-                data.type = decoded.card?.type ?? ""
-                data.category = decoded.card?.category ?? ""
-                data.issuer = decoded.issuer?.name ?? ""
-                data.country = decoded.country?.name ?? ""
-                data.countryCode = decoded.country?.alpha_2_code ?? ""
-                data.isLoaded = true
-            }
-
-            cache[prefix] = data
-        } catch {
-            cache[prefix] = data
         }
 
+        cache[prefix] = data
         return data
     }
 }

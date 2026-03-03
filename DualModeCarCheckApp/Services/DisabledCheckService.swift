@@ -82,45 +82,74 @@ class DisabledCheckService {
     }
 
     private func checkSingleEmail(_ email: String) async -> DisabledCheckResult {
-        let session = LoginSiteWebSession(targetURL: forgotPasswordURL)
-        session.stealthEnabled = true
-        session.setUp(wipeAll: true)
-        defer { session.tearDown(wipeAll: true) }
+        for attempt in 1...2 {
+            let session = LoginSiteWebSession(targetURL: forgotPasswordURL)
+            session.stealthEnabled = true
+            session.setUp(wipeAll: true)
 
-        let loaded = await session.loadPage(timeout: 20)
-        guard loaded else {
-            addLog("Failed to load forgot-password page for \(email)", level: .warning)
-            return DisabledCheckResult(email: email, isDisabled: false, responseText: "Page load failed")
+            let loaded = await session.loadPage(timeout: 15)
+            guard loaded else {
+                session.tearDown(wipeAll: true)
+                if attempt < 2 {
+                    addLog("Retrying page load for \(email) (attempt \(attempt))", level: .warning)
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                addLog("Failed to load forgot-password page for \(email) after 2 attempts", level: .warning)
+                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Page load failed")
+            }
+
+            await session.dismissCookieNotices()
+            try? await Task.sleep(for: .milliseconds(400))
+
+            let fillResult = await session.fillForgotPasswordEmail(email)
+            guard fillResult.success else {
+                session.tearDown(wipeAll: true)
+                if attempt < 2 {
+                    addLog("Retrying fill for \(email) (attempt \(attempt))", level: .warning)
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                addLog("Failed to fill email for \(email): \(fillResult.detail)", level: .warning)
+                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Fill failed: \(fillResult.detail)")
+            }
+
+            try? await Task.sleep(for: .milliseconds(250))
+
+            let submitResult = await session.clickForgotPasswordSubmit()
+            guard submitResult.success else {
+                session.tearDown(wipeAll: true)
+                if attempt < 2 {
+                    addLog("Retrying submit for \(email) (attempt \(attempt))", level: .warning)
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                addLog("Failed to submit for \(email): \(submitResult.detail)", level: .warning)
+                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Submit failed: \(submitResult.detail)")
+            }
+
+            try? await Task.sleep(for: .seconds(1.5))
+
+            let pageContent = await session.getPageContent()
+            session.tearDown(wipeAll: true)
+            let contentLower = pageContent.lowercased()
+
+            if contentLower.contains("currently disabled") || contentLower.contains("account is currently disabled") {
+                return DisabledCheckResult(email: email, isDisabled: true, responseText: "Account is currently disabled")
+            } else if contentLower.contains("information was correct") || contentLower.contains("email will be sent") {
+                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Account active or no account")
+            }
+
+            if attempt < 2 && pageContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                addLog("Empty response for \(email), retrying", level: .warning)
+                try? await Task.sleep(for: .seconds(1))
+                continue
+            }
+
+            return DisabledCheckResult(email: email, isDisabled: false, responseText: "Unknown response: \(String(pageContent.prefix(200)))")
         }
 
-        try? await Task.sleep(for: .milliseconds(500))
-
-        let fillResult = await session.fillForgotPasswordEmail(email)
-        guard fillResult.success else {
-            addLog("Failed to fill email for \(email): \(fillResult.detail)", level: .warning)
-            return DisabledCheckResult(email: email, isDisabled: false, responseText: "Fill failed: \(fillResult.detail)")
-        }
-
-        try? await Task.sleep(for: .milliseconds(300))
-
-        let submitResult = await session.clickForgotPasswordSubmit()
-        guard submitResult.success else {
-            addLog("Failed to submit for \(email): \(submitResult.detail)", level: .warning)
-            return DisabledCheckResult(email: email, isDisabled: false, responseText: "Submit failed: \(submitResult.detail)")
-        }
-
-        try? await Task.sleep(for: .seconds(2))
-
-        let pageContent = await session.getPageContent()
-        let contentLower = pageContent.lowercased()
-
-        if contentLower.contains("currently disabled") || contentLower.contains("account is currently disabled") {
-            return DisabledCheckResult(email: email, isDisabled: true, responseText: "Account is currently disabled")
-        } else if contentLower.contains("information was correct") || contentLower.contains("email will be sent") {
-            return DisabledCheckResult(email: email, isDisabled: false, responseText: "Account active or no account")
-        }
-
-        return DisabledCheckResult(email: email, isDisabled: false, responseText: "Unknown response: \(String(pageContent.prefix(200)))")
+        return DisabledCheckResult(email: email, isDisabled: false, responseText: "All attempts failed")
     }
 
     private func burnHistoryAndRotate() async {
@@ -129,6 +158,11 @@ class DisabledCheckService {
         await dataStore.removeData(ofTypes: allTypes, modifiedSince: .distantPast)
         HTTPCookieStorage.shared.removeCookies(since: .distantPast)
         URLCache.shared.removeAllCachedResponses()
+
+        let _ = proxyService.nextWorkingProxy()
+        PPSRDoHService.shared.resetRotation()
+        let _ = PPSRDoHService.shared.nextProvider()
+        addLog("Rotated proxy + DNS after perm disabled detection")
     }
 
     var disabledResults: [DisabledCheckResult] {

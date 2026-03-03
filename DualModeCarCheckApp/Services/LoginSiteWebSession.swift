@@ -64,6 +64,10 @@ class LoginSiteWebSession: NSObject {
             URLCache.shared.removeAllCachedResponses()
         }
 
+        if webView != nil {
+            tearDown(wipeAll: false)
+        }
+
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -92,19 +96,22 @@ class LoginSiteWebSession: NSObject {
     func tearDown(wipeAll: Bool = true) {
         loadTimeoutTask?.cancel()
         loadTimeoutTask = nil
-        webView?.stopLoading()
 
-        if wipeAll, let webView {
-            webView.configuration.websiteDataStore.removeData(
-                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
-                modifiedSince: .distantPast
-            ) { }
-            webView.configuration.userContentController.removeAllUserScripts()
+        if let wv = webView {
+            wv.stopLoading()
+            if wipeAll {
+                wv.configuration.websiteDataStore.removeData(
+                    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                    modifiedSince: .distantPast
+                ) { }
+                wv.configuration.userContentController.removeAllUserScripts()
+            }
+            wv.navigationDelegate = nil
         }
-
-        webView?.navigationDelegate = nil
         webView = nil
         isPageLoaded = false
+        lastNavigationError = nil
+        lastHTTPStatusCode = nil
         if let cont = pageLoadContinuation {
             pageLoadContinuation = nil
             cont.resume(returning: false)
@@ -159,6 +166,11 @@ class LoginSiteWebSession: NSObject {
         lastNavigationError = nil
         lastHTTPStatusCode = nil
 
+        if let existingCont = pageLoadContinuation {
+            pageLoadContinuation = nil
+            existingCont.resume(returning: false)
+        }
+
         let request = URLRequest(url: targetURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
         webView.load(request)
 
@@ -179,7 +191,7 @@ class LoginSiteWebSession: NSObject {
 
         if loaded {
             await injectFingerprint()
-            try? await Task.sleep(for: .milliseconds(2000))
+            try? await Task.sleep(for: .milliseconds(1500))
             await waitForDOMReady(timeout: 10)
             let _ = await validateFingerprint()
         }

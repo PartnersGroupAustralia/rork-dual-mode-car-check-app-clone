@@ -19,6 +19,10 @@ class LoginWebSession: NSObject {
     static let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
 
     func setUp() {
+        if webView != nil {
+            tearDown()
+        }
+
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -47,10 +51,19 @@ class LoginWebSession: NSObject {
     func tearDown() {
         loadTimeoutTask?.cancel()
         loadTimeoutTask = nil
-        webView?.stopLoading()
-        webView?.navigationDelegate = nil
+        if let wv = webView {
+            wv.stopLoading()
+            wv.configuration.websiteDataStore.removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: .distantPast
+            ) { }
+            wv.configuration.userContentController.removeAllUserScripts()
+            wv.navigationDelegate = nil
+        }
         webView = nil
         isPageLoaded = false
+        lastNavigationError = nil
+        lastHTTPStatusCode = nil
         if let cont = pageLoadContinuation {
             pageLoadContinuation = nil
             cont.resume(returning: false)
@@ -105,6 +118,11 @@ class LoginWebSession: NSObject {
         lastNavigationError = nil
         lastHTTPStatusCode = nil
 
+        if let existingCont = pageLoadContinuation {
+            pageLoadContinuation = nil
+            existingCont.resume(returning: false)
+        }
+
         let request = URLRequest(url: Self.targetURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
         webView.load(request)
 
@@ -126,7 +144,7 @@ class LoginWebSession: NSObject {
 
         if loaded {
             await injectFingerprint()
-            try? await Task.sleep(for: .milliseconds(2000))
+            try? await Task.sleep(for: .milliseconds(1500))
             await waitForDOMReady(timeout: 10)
             let _ = await validateFingerprint()
         }

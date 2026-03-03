@@ -102,12 +102,19 @@ class PPSRConnectionDiagnosticService {
 
     func quickHealthCheck() async -> (healthy: Bool, detail: String) {
         let start = Date()
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 12
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
         var request = URLRequest(url: targetURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 10)
         request.httpMethod = "HEAD"
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await session.data(for: request)
             let latency = Int(Date().timeIntervalSince(start) * 1000)
             if let http = response as? HTTPURLResponse {
                 if http.statusCode >= 200 && http.statusCode < 400 {
@@ -126,6 +133,13 @@ class PPSRConnectionDiagnosticService {
         currentStepName = "Internet Connectivity"
         let start = Date()
 
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
         let testURLs = [
             URL(string: "https://www.apple.com")!,
             URL(string: "https://www.google.com")!,
@@ -136,7 +150,7 @@ class PPSRConnectionDiagnosticService {
             var request = URLRequest(url: testURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
             request.httpMethod = "HEAD"
             do {
-                let (_, response) = try await URLSession.shared.data(for: request)
+                let (_, response) = try await session.data(for: request)
                 let latency = Int(Date().timeIntervalSince(start) * 1000)
                 if let http = response as? HTTPURLResponse, http.statusCode < 400 {
                     return DiagnosticStep(name: "Internet Connectivity", status: .passed, detail: "Connected via \(testURL.host ?? "unknown") (\(http.statusCode))", latencyMs: latency)
@@ -152,15 +166,27 @@ class PPSRConnectionDiagnosticService {
     private func testDNSResolution() async -> DiagnosticStep {
         currentStepName = "System DNS"
         let start = Date()
+        let hostName = targetHost
 
-        let host = CFHostCreateWithName(nil, targetHost as CFString).takeRetainedValue()
-        var resolved = DarwinBoolean(false)
-        CFHostStartInfoResolution(host, .addresses, nil)
-        guard let addresses = CFHostGetAddressing(host, &resolved)?.takeUnretainedValue() as? [Data], !addresses.isEmpty else {
-            return DiagnosticStep(name: "System DNS", status: .failed, detail: "System DNS cannot resolve \(targetHost) — DNS may be blocked or misconfigured")
+        let result: (addresses: Int, success: Bool) = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let host = CFHostCreateWithName(nil, hostName as CFString).takeRetainedValue()
+                var resolved = DarwinBoolean(false)
+                CFHostStartInfoResolution(host, .addresses, nil)
+                if let addresses = CFHostGetAddressing(host, &resolved)?.takeUnretainedValue() as? [Data], !addresses.isEmpty {
+                    continuation.resume(returning: (addresses.count, true))
+                } else {
+                    continuation.resume(returning: (0, false))
+                }
+            }
         }
+
         let latency = Int(Date().timeIntervalSince(start) * 1000)
-        return DiagnosticStep(name: "System DNS", status: .passed, detail: "Resolved \(targetHost) via system DNS (\(addresses.count) address(es))", latencyMs: latency)
+
+        guard result.success else {
+            return DiagnosticStep(name: "System DNS", status: .failed, detail: "System DNS cannot resolve \(targetHost) — DNS may be blocked or misconfigured", latencyMs: latency)
+        }
+        return DiagnosticStep(name: "System DNS", status: .passed, detail: "Resolved \(targetHost) via system DNS (\(result.addresses) address(es))", latencyMs: latency)
     }
 
     private func testDoHResolution() async -> DiagnosticStep {
@@ -234,10 +260,13 @@ class PPSRConnectionDiagnosticService {
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 12
         let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
 
         var request = URLRequest(url: URL(string: "https://\(targetHost)")!)
         request.httpMethod = "HEAD"
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         do {
             let (_, response) = try await session.data(for: request)

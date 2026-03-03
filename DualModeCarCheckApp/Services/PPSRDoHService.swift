@@ -53,8 +53,13 @@ class PPSRDoHService {
     }
 
     func resolveWithRotation(hostname: String) async -> DNSAnswer? {
-        let provider = nextProvider()
-        return await resolve(hostname: hostname, using: provider)
+        for _ in 0..<3 {
+            let provider = nextProvider()
+            if let answer = await resolve(hostname: hostname, using: provider) {
+                return answer
+            }
+        }
+        return nil
     }
 
     func resolve(hostname: String, using provider: DoHProvider) async -> DNSAnswer? {
@@ -65,22 +70,36 @@ class PPSRDoHService {
         ]
         guard let url = components.url else { return nil }
 
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 5)
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
         request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
 
         let start = Date()
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             let latency = Int(Date().timeIntervalSince(start) * 1000)
 
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 return nil
             }
 
+            guard !data.isEmpty else { return nil }
+
             let decoded = try JSONDecoder().decode(DoHResponse.self, from: data)
+
+            guard decoded.Status == 0 || decoded.Status == nil else { return nil }
+
             guard let answers = decoded.Answer,
                   let aRecord = answers.first(where: { $0.type == 1 }),
-                  let ip = aRecord.data else {
+                  let ip = aRecord.data,
+                  !ip.isEmpty else {
                 return nil
             }
 
@@ -91,11 +110,13 @@ class PPSRDoHService {
     }
 
     func preflightResolve(hostname: String) async -> (provider: String, ip: String, latencyMs: Int)? {
-        let provider = nextProvider()
-        guard let answer = await resolve(hostname: hostname, using: provider) else {
-            return nil
+        for _ in 0..<3 {
+            let provider = nextProvider()
+            if let answer = await resolve(hostname: hostname, using: provider) {
+                return (provider: answer.provider, ip: answer.ip, latencyMs: answer.latencyMs)
+            }
         }
-        return (provider: answer.provider, ip: answer.ip, latencyMs: answer.latencyMs)
+        return nil
     }
 
     var providerCount: Int {

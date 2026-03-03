@@ -273,46 +273,85 @@ class LoginViewModel {
         let testURL = getNextTestURL()
         log("Testing connection to \(testURL.host ?? "unknown")...")
 
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
+        config.waitsForConnectivity = false
+        let urlSession = URLSession(configuration: config)
+        defer { urlSession.invalidateAndCancel() }
+
         var request = URLRequest(url: testURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
         request.httpMethod = "GET"
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
 
+        var httpOK = false
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await urlSession.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if http.statusCode >= 200 && http.statusCode < 400 {
-                    connectionStatus = .connected
+                    httpOK = true
                     consecutiveConnectionFailures = 0
                     urlRotation.reportSuccess(urlString: testURL.absoluteString)
-                    log("Connected — HTTP \(http.statusCode) (\(data.count) bytes)", level: .success)
-
-                    let session = LoginSiteWebSession(targetURL: testURL)
-                    session.stealthEnabled = stealthEnabled
-                    session.setUp()
-                    defer { session.tearDown() }
-
-                    let loaded = await session.loadPage(timeout: 20)
-                    if loaded {
-                        let verification = await session.verifyLoginFieldsExist()
-                        if verification.found == 2 {
-                            log("WebView verification: both login fields found", level: .success)
-                        } else {
-                            log("WebView verification: \(verification.found)/2 fields. Missing: \(verification.missing.joined(separator: ", "))", level: .warning)
-                        }
-                    } else {
-                        log("WebView page load failed — HTTP works but WKWebView could not render", level: .warning)
-                    }
+                    log("HTTP OK — \(http.statusCode) (\(data.count) bytes)", level: .success)
                 } else {
                     connectionStatus = .error
                     urlRotation.reportFailure(urlString: testURL.absoluteString)
                     log("Connection failed — HTTP \(http.statusCode)", level: .error)
+                    return
                 }
             }
-        } catch {
+        } catch let error as NSError {
             connectionStatus = .error
+            consecutiveConnectionFailures += 1
             urlRotation.reportFailure(urlString: testURL.absoluteString)
-            log("Connection failed: \(error.localizedDescription)", level: .error)
+            let detail: String
+            if error.domain == NSURLErrorDomain {
+                switch error.code {
+                case NSURLErrorNotConnectedToInternet: detail = "No internet connection"
+                case NSURLErrorTimedOut: detail = "Connection timed out (15s)"
+                case NSURLErrorCannotFindHost: detail = "DNS failed for \(testURL.host ?? "")"
+                case NSURLErrorCannotConnectToHost: detail = "Cannot connect to \(testURL.host ?? "")"
+                case NSURLErrorNetworkConnectionLost: detail = "Network connection lost"
+                case NSURLErrorSecureConnectionFailed: detail = "SSL/TLS handshake failed"
+                default: detail = "Network error (\(error.code)): \(error.localizedDescription)"
+                }
+            } else {
+                detail = error.localizedDescription
+            }
+            log("Connection failed: \(detail)", level: .error)
+
+            if consecutiveConnectionFailures >= 3 {
+                log("\(consecutiveConnectionFailures) consecutive failures — try switching networks or checking proxy settings", level: .error)
+            }
+            return
         }
+
+        guard httpOK else {
+            connectionStatus = .error
+            return
+        }
+
+        let session = LoginSiteWebSession(targetURL: testURL)
+        session.stealthEnabled = stealthEnabled
+        session.setUp(wipeAll: true)
+
+        let loaded = await session.loadPage(timeout: 20)
+        if loaded {
+            let verification = await session.verifyLoginFieldsExist()
+            if verification.found == 2 {
+                connectionStatus = .connected
+                log("WebView verification: both login fields found", level: .success)
+            } else {
+                connectionStatus = .connected
+                log("WebView verification: \(verification.found)/2 fields. Missing: \(verification.missing.joined(separator: ", "))", level: .warning)
+            }
+        } else {
+            connectionStatus = .connected
+            let errorDetail = session.lastNavigationError ?? "unknown"
+            log("WebView page load failed (\(errorDetail)) — HTTP works but WKWebView could not render", level: .warning)
+        }
+        session.tearDown(wipeAll: true)
     }
 
     func smartImportCredentials(_ input: String) {
