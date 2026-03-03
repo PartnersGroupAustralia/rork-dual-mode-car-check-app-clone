@@ -2,7 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LoginContentView: View {
+    @AppStorage("productMode") private var modeRaw: String = ProductMode.joe.rawValue
     @State private var vm = LoginViewModel()
+    @State private var initialModeApplied: Bool = false
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -61,6 +63,18 @@ struct LoginContentView: View {
         }
         .tint(accentColor)
         .preferredColorScheme(vm.effectiveColorScheme)
+        .onAppear {
+            if !initialModeApplied {
+                initialModeApplied = true
+                let mode = ProductMode(rawValue: modeRaw) ?? .joe
+                switch mode {
+                case .joe: vm.setSiteMode(.joe)
+                case .ignition: vm.setSiteMode(.ignition)
+                case .dual: vm.setSiteMode(.dual)
+                case .ppsr: break
+                }
+            }
+        }
         .onChange(of: vm.credentials.count) { _, _ in
             vm.persistCredentials()
         }
@@ -1495,7 +1509,6 @@ struct FullScreenshotView: View {
 
 struct LoginSettingsContentView: View {
     @Bindable var vm: LoginViewModel
-    @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
     @State private var showProxyImport: Bool = false
     @State private var proxyBulkText: String = ""
     @State private var proxyImportReport: ProxyRotationService.ImportReport?
@@ -1506,6 +1519,8 @@ struct LoginSettingsContentView: View {
     @State private var ignitionProxyBulkText: String = ""
     @State private var ignitionProxyImportReport: ProxyRotationService.ImportReport?
     @State private var isTestingIgnitionProxies: Bool = false
+    @State private var showDNSManager: Bool = false
+    @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -1513,17 +1528,18 @@ struct LoginSettingsContentView: View {
 
     var body: some View {
         List {
-            modeSection
             siteToggleSection
             quickActionsSection
-            blacklistSection
             urlRotationSection
             proxySection
             ignitionProxySection
+            blacklistSection
             stealthSection
+            dohSection
             concurrencySection
             debugSection
             appearanceSection
+            introVideoSection
             iCloudSection
             endpointSection
             aboutSection
@@ -1533,6 +1549,7 @@ struct LoginSettingsContentView: View {
         .sheet(isPresented: $showProxyImport) { proxyImportSheet }
         .sheet(isPresented: $showIgnitionProxyImport) { ignitionProxyImportSheet }
         .sheet(isPresented: $showURLManager) { urlManagerSheet }
+        .sheet(isPresented: $showDNSManager) { loginDNSManagerSheet }
         .sheet(isPresented: $showDebugScreenshots) {
             NavigationStack {
                 LoginDebugScreenshotsView(vm: vm)
@@ -1543,19 +1560,6 @@ struct LoginSettingsContentView: View {
                     }
             }
             .presentationDetents([.large])
-        }
-    }
-
-    private var modeSection: some View {
-        Section("Mode") {
-            Picker("Active Product", selection: Binding(
-                get: { ProductMode(rawValue: modeRaw) ?? .ppsr },
-                set: { modeRaw = $0.rawValue }
-            )) {
-                Text("PPSR CarCheck").tag(ProductMode.ppsr)
-                Text("Joe & Ignition Login").tag(ProductMode.login)
-            }
-            .pickerStyle(.menu)
         }
     }
 
@@ -1878,6 +1882,194 @@ struct LoginSettingsContentView: View {
         } footer: {
             Text(vm.stealthEnabled ? "Each session uses a unique browser identity. Complete history wipe between tests." : "Enable to rotate browser fingerprints across sessions.")
         }
+    }
+
+    private var dohSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Secure DoH DNS Rotation").font(.body)
+                    let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                    let total = PPSRDoHService.shared.managedProviders.count
+                    Text("\(enabled)/\(total) providers enabled").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: vm.stealthEnabled ? "checkmark.circle.fill" : "xmark.circle")
+                    .foregroundStyle(vm.stealthEnabled ? .green : .secondary)
+            }
+
+            Button { showDNSManager = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack").foregroundStyle(.cyan)
+                    Text("Manage DNS Servers")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("DNS-over-HTTPS")
+        } footer: {
+            Text(vm.stealthEnabled ? "Each test resolves through a different DoH provider." : "Enable Ultra Stealth to activate DoH rotation.")
+        }
+    }
+
+    private var introVideoSection: some View {
+        Section {
+            Toggle(isOn: $introVideoEnabled) {
+                HStack(spacing: 10) {
+                    Image(systemName: "film.fill").foregroundStyle(.pink)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Intro Video").font(.body)
+                        Text("Play intro video on app launch").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .tint(.pink)
+        } header: {
+            Text("Startup")
+        }
+    }
+
+    @State private var loginDNSImportText: String = ""
+    @State private var showLoginDNSImport: Bool = false
+    @State private var newLoginDNSName: String = ""
+    @State private var newLoginDNSURL: String = ""
+
+    private var loginDNSManagerSheet: some View {
+        NavigationStack {
+            List {
+                if showLoginDNSImport {
+                    Section("Import DNS Servers") {
+                        Text("One per line. Format: Name|URL or just URL")
+                            .font(.caption2).foregroundStyle(.secondary)
+
+                        TextEditor(text: $loginDNSImportText)
+                            .font(.system(.callout, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                            .clipShape(.rect(cornerRadius: 8))
+                            .frame(minHeight: 80)
+                            .overlay(alignment: .topLeading) {
+                                if loginDNSImportText.isEmpty {
+                                    Text("Custom|https://dns.example.com/dns-query")
+                                        .font(.system(.callout, design: .monospaced))
+                                        .foregroundStyle(.quaternary)
+                                        .padding(.horizontal, 12).padding(.vertical, 16)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                        HStack {
+                            Button {
+                                if let clip = UIPasteboard.general.string { loginDNSImportText = clip }
+                            } label: {
+                                Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            Spacer()
+                            Button {
+                                let result = PPSRDoHService.shared.bulkImportProviders(loginDNSImportText)
+                                vm.log("DNS import: \(result.added) added, \(result.duplicates) dupes", level: result.added > 0 ? .success : .warning)
+                                loginDNSImportText = ""
+                                if result.added > 0 { withAnimation(.snappy) { showLoginDNSImport = false } }
+                            } label: {
+                                Label("Import", systemImage: "arrow.down.doc.fill").font(.caption.bold())
+                            }
+                            .buttonStyle(.borderedProminent).tint(.cyan)
+                            .disabled(loginDNSImportText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
+                    Section("Add Single Server") {
+                        TextField("Name", text: $newLoginDNSName)
+                            .font(.system(.body, design: .monospaced))
+                        TextField("https://dns.example.com/dns-query", text: $newLoginDNSURL)
+                            .font(.system(.callout, design: .monospaced))
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button {
+                            if PPSRDoHService.shared.addProvider(name: newLoginDNSName, url: newLoginDNSURL) {
+                                vm.log("Added DNS: \(newLoginDNSName)", level: .success)
+                                newLoginDNSName = ""
+                                newLoginDNSURL = ""
+                            }
+                        } label: {
+                            Label("Add Server", systemImage: "plus.circle.fill")
+                        }
+                        .disabled(newLoginDNSName.trimmingCharacters(in: .whitespaces).isEmpty || newLoginDNSURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                Section {
+                    ForEach(PPSRDoHService.shared.managedProviders) { provider in
+                        HStack(spacing: 10) {
+                            Button {
+                                PPSRDoHService.shared.toggleProvider(id: provider.id, enabled: !provider.isEnabled)
+                            } label: {
+                                Image(systemName: provider.isEnabled ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(provider.isEnabled ? .cyan : .secondary)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(provider.name).font(.system(.subheadline, design: .monospaced, weight: .medium))
+                                    if provider.isDefault {
+                                        Text("DEFAULT")
+                                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.cyan.opacity(0.7))
+                                            .padding(.horizontal, 4).padding(.vertical, 1)
+                                            .background(Color.cyan.opacity(0.1)).clipShape(Capsule())
+                                    }
+                                }
+                                Text(provider.url.replacingOccurrences(of: "https://", with: ""))
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                PPSRDoHService.shared.deleteProvider(id: provider.id)
+                                vm.log("Deleted DNS: \(provider.name)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+                } header: {
+                    Text("DNS Servers (\(enabled)/\(PPSRDoHService.shared.managedProviders.count))")
+                }
+
+                Section {
+                    Button {
+                        withAnimation(.snappy) { showLoginDNSImport.toggle() }
+                    } label: {
+                        Label(showLoginDNSImport ? "Hide Import" : "Import / Add Servers", systemImage: "plus.circle.fill")
+                    }
+                    Button {
+                        PPSRDoHService.shared.enableAll()
+                        vm.log("Enabled all DNS providers", level: .success)
+                    } label: {
+                        Label("Enable All", systemImage: "checkmark.circle")
+                    }
+                    Button {
+                        PPSRDoHService.shared.resetToDefaults()
+                        vm.log("Reset DNS to defaults", level: .success)
+                    } label: {
+                        Label("Reset to Defaults", systemImage: "arrow.uturn.backward")
+                    }
+                } header: {
+                    Text("Actions")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("DNS Manager").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { showDNSManager = false } }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 
     private var concurrencySection: some View {
@@ -2338,13 +2530,17 @@ struct LoginSettingsContentView: View {
         .presentationContentInteraction(.scrolls)
     }
 
+    @State private var urlImportText: String = ""
+    @State private var showURLImportBox: Bool = false
+    @State private var urlViewingIgnition: Bool = false
+
     private var urlManagerSheet: some View {
         NavigationStack {
             List {
                 Section {
                     HStack(spacing: 0) {
                         Button {
-                            withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = false }
+                            withAnimation(.spring(duration: 0.3)) { urlViewingIgnition = false }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "suit.spade.fill")
@@ -2352,13 +2548,13 @@ struct LoginSettingsContentView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
-                            .background(!vm.isIgnitionMode ? Color.green : Color(.tertiarySystemFill))
-                            .foregroundStyle(!vm.isIgnitionMode ? .white : .secondary)
+                            .background(!urlViewingIgnition ? Color.green : Color(.tertiarySystemFill))
+                            .foregroundStyle(!urlViewingIgnition ? .white : .secondary)
                         }
                         .clipShape(.rect(cornerRadii: .init(topLeading: 10, bottomLeading: 10)))
 
                         Button {
-                            withAnimation(.spring(duration: 0.3)) { vm.isIgnitionMode = true }
+                            withAnimation(.spring(duration: 0.3)) { urlViewingIgnition = true }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "flame.fill")
@@ -2366,51 +2562,138 @@ struct LoginSettingsContentView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
-                            .background(vm.isIgnitionMode ? Color.orange : Color(.tertiarySystemFill))
-                            .foregroundStyle(vm.isIgnitionMode ? .white : .secondary)
+                            .background(urlViewingIgnition ? Color.orange : Color(.tertiarySystemFill))
+                            .foregroundStyle(urlViewingIgnition ? .white : .secondary)
                         }
                         .clipShape(.rect(cornerRadii: .init(bottomTrailing: 10, topTrailing: 10)))
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
 
+                if showURLImportBox {
+                    Section("Import URLs") {
+                        TextEditor(text: $urlImportText)
+                            .font(.system(.callout, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                            .clipShape(.rect(cornerRadius: 8))
+                            .frame(minHeight: 100)
+                            .overlay(alignment: .topLeading) {
+                                if urlImportText.isEmpty {
+                                    Text("One URL per line...\nhttps://domain.com/login")
+                                        .font(.system(.callout, design: .monospaced))
+                                        .foregroundStyle(.quaternary)
+                                        .padding(.horizontal, 12).padding(.vertical, 16)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                        HStack {
+                            Button {
+                                if let clip = UIPasteboard.general.string { urlImportText = clip }
+                            } label: {
+                                Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            Spacer()
+                            Button {
+                                let result = vm.urlRotation.bulkImportURLs(urlImportText, forIgnition: urlViewingIgnition)
+                                vm.log("URL import: \(result.added) added, \(result.duplicates) dupes, \(result.invalid) invalid", level: result.added > 0 ? .success : .warning)
+                                urlImportText = ""
+                                if result.added > 0 {
+                                    withAnimation(.snappy) { showURLImportBox = false }
+                                }
+                            } label: {
+                                Label("Import", systemImage: "arrow.down.doc.fill").font(.caption.bold())
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(urlViewingIgnition ? .orange : .green)
+                            .disabled(urlImportText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                }
+
+                let urlList = urlViewingIgnition ? vm.urlRotation.ignitionURLs : vm.urlRotation.joeURLs
                 Section {
-                    ForEach(vm.urlRotation.activeURLs) { urlEntry in
+                    ForEach(urlList) { urlEntry in
                         HStack(spacing: 10) {
                             Circle()
-                                .fill(urlEntry.isEnabled ? accentColor : Color.red.opacity(0.5))
+                                .fill(urlEntry.isEnabled ? (urlViewingIgnition ? Color.orange : Color.green) : Color.red.opacity(0.5))
                                 .frame(width: 8, height: 8)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(urlEntry.host)
                                     .font(.system(.subheadline, design: .monospaced))
                                     .foregroundStyle(urlEntry.isEnabled ? .primary : .secondary)
                                     .strikethrough(!urlEntry.isEnabled)
-                                if urlEntry.failCount > 0 {
-                                    Text("\(urlEntry.failCount) failures")
-                                        .font(.caption2).foregroundStyle(.red)
+                                HStack(spacing: 6) {
+                                    if urlEntry.failCount > 0 {
+                                        Text("\(urlEntry.failCount) fails").font(.caption2).foregroundStyle(.red)
+                                    }
+                                    if urlEntry.totalAttempts > 0 {
+                                        Text(urlEntry.formattedSuccessRate).font(.caption2).foregroundStyle(.secondary)
+                                        Text(urlEntry.formattedAvgResponse).font(.caption2).foregroundStyle(.tertiary)
+                                    }
                                 }
                             }
                             Spacer()
                             Button {
                                 vm.urlRotation.toggleURL(id: urlEntry.id, enabled: !urlEntry.isEnabled)
                             } label: {
-                                Text(urlEntry.isEnabled ? "Disable" : "Enable")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(urlEntry.isEnabled ? .red : .green)
+                                Image(systemName: urlEntry.isEnabled ? "checkmark.circle.fill" : "xmark.circle")
+                                    .foregroundStyle(urlEntry.isEnabled ? .green : .red.opacity(0.5))
                             }
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                vm.urlRotation.deleteURL(id: urlEntry.id)
+                                vm.log("Deleted URL: \(urlEntry.host)")
+                            } label: { Label("Delete", systemImage: "trash") }
                         }
                     }
                 } header: {
-                    Text("\(vm.isIgnitionMode ? "Ignition" : "Joe") URLs (\(vm.urlRotation.enabledURLs.count)/\(vm.urlRotation.activeURLs.count))")
+                    let enabled = urlList.filter(\.isEnabled).count
+                    Text("\(urlViewingIgnition ? "Ignition" : "Joe") URLs (\(enabled)/\(urlList.count))")
                 }
 
                 Section {
                     Button {
+                        withAnimation(.snappy) { showURLImportBox.toggle() }
+                    } label: {
+                        Label(showURLImportBox ? "Hide Import" : "Import URLs", systemImage: "plus.circle.fill")
+                    }
+
+                    Button {
                         vm.urlRotation.enableAllURLs()
                         vm.log("Re-enabled all URLs", level: .success)
                     } label: {
-                        Label("Re-enable All URLs", systemImage: "arrow.counterclockwise")
+                        Label("Re-enable All", systemImage: "arrow.counterclockwise")
                     }
+
+                    Button {
+                        vm.urlRotation.resetPerformanceStats()
+                        vm.log("Reset URL performance stats")
+                    } label: {
+                        Label("Reset Stats", systemImage: "chart.bar.xaxis")
+                    }
+
+                    Button {
+                        vm.urlRotation.resetToDefaults(forIgnition: urlViewingIgnition)
+                        vm.log("Reset \(urlViewingIgnition ? "Ignition" : "Joe") URLs to defaults", level: .success)
+                    } label: {
+                        Label("Reset to Defaults", systemImage: "arrow.uturn.backward")
+                    }
+
+                    if !urlList.isEmpty {
+                        Button(role: .destructive) {
+                            vm.urlRotation.deleteAllURLs(forIgnition: urlViewingIgnition)
+                            vm.log("Deleted all \(urlViewingIgnition ? "Ignition" : "Joe") URLs")
+                        } label: {
+                            Label("Delete All \(urlViewingIgnition ? "Ignition" : "Joe") URLs", systemImage: "trash")
+                        }
+                    }
+                } header: {
+                    Text("Actions")
                 }
             }
             .listStyle(.insetGrouped)
@@ -2431,35 +2714,29 @@ struct LoginMoreMenuView: View {
 
     var body: some View {
         List {
-            Section("Joe & Ignition Tools") {
+            Section {
+                NavigationLink {
+                    LoginSettingsContentView(vm: vm)
+                } label: {
+                    moreRow(icon: "gearshape.fill", title: "Settings", subtitle: "Automation, stealth, proxies & more", color: .secondary)
+                }
+            }
+
+            Section("Account Tools") {
                 NavigationLink {
                     CheckDisabledAccountsView(vm: vm)
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "magnifyingglass.circle.fill")
-                            .font(.title3).foregroundStyle(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Check Disabled Accounts").font(.subheadline.bold())
-                            Text("Fast forgot-password check for disabled status").font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
+                    moreRow(icon: "magnifyingglass.circle.fill", title: "Check Disabled Accounts", subtitle: "Fast forgot-password check", color: .orange)
                 }
 
                 NavigationLink {
                     TempDisabledAccountsView(vm: vm)
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "clock.badge.exclamationmark")
-                            .font(.title3).foregroundStyle(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Temp Disabled Accounts").font(.subheadline.bold())
-                            Text("\(vm.tempDisabledCredentials.count) accounts").font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
+                    moreRow(icon: "clock.badge.exclamationmark", title: "Temp Disabled Accounts", subtitle: "\(vm.tempDisabledCredentials.count) accounts", color: .orange)
                 }
             }
 
-            Section("Data Management") {
+            Section("Data") {
                 NavigationLink {
                     BlacklistView(vm: vm)
                 } label: {
@@ -2468,7 +2745,7 @@ struct LoginMoreMenuView: View {
                             .font(.title3).foregroundStyle(.red)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Blacklist").font(.subheadline.bold())
-                            Text("\(vm.blacklistService.blacklistedEmails.count) blacklisted emails").font(.caption2).foregroundStyle(.secondary)
+                            Text("\(vm.blacklistService.blacklistedEmails.count) blacklisted").font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if vm.blacklistService.autoExcludeBlacklist {
@@ -2484,26 +2761,7 @@ struct LoginMoreMenuView: View {
                 NavigationLink {
                     CredentialExportView(vm: vm)
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "square.and.arrow.up.fill")
-                            .font(.title3).foregroundStyle(.blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Export Credentials").font(.subheadline.bold())
-                            Text("Export as text or CSV by category").font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-
-            Section("Settings") {
-                NavigationLink {
-                    LoginSettingsContentView(vm: vm)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.title3).foregroundStyle(.secondary)
-                        Text("Settings").font(.subheadline.bold())
-                    }
+                    moreRow(icon: "square.and.arrow.up.fill", title: "Export Credentials", subtitle: "Text or CSV by category", color: .blue)
                 }
             }
 
@@ -2532,6 +2790,16 @@ struct LoginMoreMenuView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("More")
+    }
+
+    private func moreRow(icon: String, title: String, subtitle: String, color: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.title3).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.bold())
+                Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func moreLogColor(_ level: PPSRLogEntry.Level) -> Color {

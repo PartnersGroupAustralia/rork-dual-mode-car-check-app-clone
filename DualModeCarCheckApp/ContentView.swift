@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
-    private var currentMode: ProductMode { ProductMode(rawValue: modeRaw) ?? .ppsr }
 
     @State private var vm = PPSRAutomationViewModel()
     @State private var selectedTab: AppTab = .dashboard

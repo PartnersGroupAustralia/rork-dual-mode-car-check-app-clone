@@ -244,6 +244,68 @@ class LoginURLRotationService {
         persistState()
     }
 
+    func addURL(_ urlString: String, forIgnition: Bool) -> Bool {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, URL(string: trimmed) != nil else { return false }
+        if forIgnition {
+            guard !ignitionURLs.contains(where: { $0.urlString == trimmed }) else { return false }
+            ignitionURLs.append(RotatingURL(urlString: trimmed, isEnabled: true, lastFailure: nil, failCount: 0))
+        } else {
+            guard !joeURLs.contains(where: { $0.urlString == trimmed }) else { return false }
+            joeURLs.append(RotatingURL(urlString: trimmed, isEnabled: true, lastFailure: nil, failCount: 0))
+        }
+        persistState()
+        return true
+    }
+
+    func bulkImportURLs(_ text: String, forIgnition: Bool) -> (added: Int, duplicates: Int, invalid: Int) {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var added = 0
+        var duplicates = 0
+        var invalid = 0
+        for line in lines {
+            var urlStr = line
+            if !urlStr.hasPrefix("http") { urlStr = "https://" + urlStr }
+            guard URL(string: urlStr) != nil else { invalid += 1; continue }
+            let existing = forIgnition ? ignitionURLs : joeURLs
+            if existing.contains(where: { $0.urlString == urlStr }) {
+                duplicates += 1
+                continue
+            }
+            let entry = RotatingURL(urlString: urlStr, isEnabled: true, lastFailure: nil, failCount: 0)
+            if forIgnition { ignitionURLs.append(entry) } else { joeURLs.append(entry) }
+            added += 1
+        }
+        if added > 0 { persistState() }
+        return (added, duplicates, invalid)
+    }
+
+    func deleteURL(id: UUID) {
+        joeURLs.removeAll { $0.id == id }
+        ignitionURLs.removeAll { $0.id == id }
+        persistState()
+    }
+
+    func deleteAllURLs(forIgnition: Bool) {
+        if forIgnition {
+            ignitionURLs.removeAll()
+        } else {
+            joeURLs.removeAll()
+        }
+        persistState()
+    }
+
+    func resetToDefaults(forIgnition: Bool) {
+        if forIgnition {
+            ignitionURLs = Self.defaultIgnitionURLStrings.map { RotatingURL(urlString: $0, isEnabled: true, lastFailure: nil, failCount: 0) }
+        } else {
+            joeURLs = Self.defaultJoeURLStrings.map { RotatingURL(urlString: $0, isEnabled: true, lastFailure: nil, failCount: 0) }
+        }
+        persistState()
+    }
+
     var topPerformingURLs: [RotatingURL] {
         enabledURLs.filter { $0.totalAttempts >= 2 }.sorted { $0.performanceScore > $1.performanceScore }
     }

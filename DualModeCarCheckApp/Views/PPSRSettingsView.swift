@@ -2,7 +2,6 @@ import SwiftUI
 
 struct PPSRSettingsView: View {
     @Bindable var vm: PPSRAutomationViewModel
-    @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
     @State private var showEmailImport: Bool = false
     @State private var emailCSVText: String = ""
@@ -11,41 +10,29 @@ struct PPSRSettingsView: View {
     @State private var cropW: String = ""
     @State private var cropH: String = ""
     @State private var showCropEditor: Bool = false
+    @State private var showDNSManager: Bool = false
 
     var body: some View {
         List {
-            modeSection
             importSection
             automationSection
+            concurrencySection
             stealthSection
             dohSection
             emailSection
             screenshotSection
             debugSection
-            introVideoSection
-            appearanceSection
-            iCloudSection
-            concurrencySection
             endpointSection
+            iCloudSection
+            appearanceSection
+            introVideoSection
             aboutSection
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Settings")
         .sheet(isPresented: $showEmailImport) { emailImportSheet }
         .sheet(isPresented: $showCropEditor) { cropEditorSheet }
-    }
-
-    private var modeSection: some View {
-        Section("Mode") {
-            Picker("Active Product", selection: Binding(
-                get: { ProductMode(rawValue: modeRaw) ?? .ppsr },
-                set: { modeRaw = $0.rawValue }
-            )) {
-                Text("PPSR CarCheck").tag(ProductMode.ppsr)
-                Text("Joe & Ignition Login").tag(ProductMode.login)
-            }
-            .pickerStyle(.menu)
-        }
+        .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
     }
 
     private var stealthSection: some View {
@@ -74,22 +61,21 @@ struct PPSRSettingsView: View {
                 Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Secure DoH DNS Rotation").font(.body)
-                    Text("\(PPSRDoHService.shared.providerCount) providers · rotates each test").font(.caption2).foregroundStyle(.secondary)
+                    let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                    let total = PPSRDoHService.shared.managedProviders.count
+                    Text("\(enabled)/\(total) providers enabled · rotates each test").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: vm.stealthEnabled ? "checkmark.circle.fill" : "xmark.circle")
                     .foregroundStyle(vm.stealthEnabled ? .green : .secondary)
             }
 
-            if vm.stealthEnabled {
-                ForEach(Array(PPSRDoHService.shared.providers.enumerated()), id: \.offset) { index, provider in
-                    HStack(spacing: 10) {
-                        Text("\(index + 1)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.secondary).frame(width: 18)
-                        Text(provider.name).font(.system(.subheadline, design: .monospaced))
-                        Spacer()
-                        Text(provider.url.replacingOccurrences(of: "https://", with: ""))
-                            .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
-                    }
+            Button { showDNSManager = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack").foregroundStyle(.cyan)
+                    Text("Manage DNS Servers")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                 }
             }
         } header: {
@@ -407,7 +393,7 @@ struct PPSRSettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            LabeledContent("Version", value: "7.0.0")
+            LabeledContent("Version", value: "8.0.0")
             LabeledContent("Engine", value: "WKWebView Live")
             LabeledContent("Storage", value: "Unlimited · Local + iCloud")
             LabeledContent("Stealth") { Text(vm.stealthEnabled ? "Ultra Stealth" : "Standard").foregroundStyle(vm.stealthEnabled ? .purple : .secondary) }
@@ -500,6 +486,152 @@ struct PPSRSettingsView: View {
                     }
                     .disabled(emailCSVText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    @State private var dnsImportText: String = ""
+    @State private var showDNSImport: Bool = false
+    @State private var newDNSName: String = ""
+    @State private var newDNSURL: String = ""
+
+    private var dnsManagerSheet: some View {
+        NavigationStack {
+            List {
+                if showDNSImport {
+                    Section("Import DNS Servers") {
+                        Text("One per line. Format: Name|URL or just URL")
+                            .font(.caption2).foregroundStyle(.secondary)
+
+                        TextEditor(text: $dnsImportText)
+                            .font(.system(.callout, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                            .clipShape(.rect(cornerRadius: 8))
+                            .frame(minHeight: 80)
+                            .overlay(alignment: .topLeading) {
+                                if dnsImportText.isEmpty {
+                                    Text("Custom|https://dns.example.com/dns-query\nhttps://dns.other.com/dns-query")
+                                        .font(.system(.callout, design: .monospaced))
+                                        .foregroundStyle(.quaternary)
+                                        .padding(.horizontal, 12).padding(.vertical, 16)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                        HStack {
+                            Button {
+                                if let clip = UIPasteboard.general.string { dnsImportText = clip }
+                            } label: {
+                                Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            Spacer()
+                            Button {
+                                let result = PPSRDoHService.shared.bulkImportProviders(dnsImportText)
+                                vm.log("DNS import: \(result.added) added, \(result.duplicates) dupes, \(result.invalid) invalid", level: result.added > 0 ? .success : .warning)
+                                dnsImportText = ""
+                                if result.added > 0 { withAnimation(.snappy) { showDNSImport = false } }
+                            } label: {
+                                Label("Import", systemImage: "arrow.down.doc.fill").font(.caption.bold())
+                            }
+                            .buttonStyle(.borderedProminent).tint(.cyan)
+                            .disabled(dnsImportText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
+                    Section("Add Single Server") {
+                        TextField("Name", text: $newDNSName)
+                            .font(.system(.body, design: .monospaced))
+                        TextField("https://dns.example.com/dns-query", text: $newDNSURL)
+                            .font(.system(.callout, design: .monospaced))
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+
+                        Button {
+                            if PPSRDoHService.shared.addProvider(name: newDNSName, url: newDNSURL) {
+                                vm.log("Added DNS provider: \(newDNSName)", level: .success)
+                                newDNSName = ""
+                                newDNSURL = ""
+                            }
+                        } label: {
+                            Label("Add Server", systemImage: "plus.circle.fill")
+                        }
+                        .disabled(newDNSName.trimmingCharacters(in: .whitespaces).isEmpty || newDNSURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                Section {
+                    ForEach(PPSRDoHService.shared.managedProviders) { provider in
+                        HStack(spacing: 10) {
+                            Button {
+                                PPSRDoHService.shared.toggleProvider(id: provider.id, enabled: !provider.isEnabled)
+                            } label: {
+                                Image(systemName: provider.isEnabled ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(provider.isEnabled ? .cyan : .secondary)
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(provider.name).font(.system(.subheadline, design: .monospaced, weight: .medium))
+                                    if provider.isDefault {
+                                        Text("DEFAULT")
+                                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.cyan.opacity(0.7))
+                                            .padding(.horizontal, 4).padding(.vertical, 1)
+                                            .background(Color.cyan.opacity(0.1)).clipShape(Capsule())
+                                    }
+                                }
+                                Text(provider.url.replacingOccurrences(of: "https://", with: ""))
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                PPSRDoHService.shared.deleteProvider(id: provider.id)
+                                vm.log("Deleted DNS provider: \(provider.name)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+                } header: {
+                    Text("DNS Servers (\(enabled)/\(PPSRDoHService.shared.managedProviders.count))")
+                }
+
+                Section {
+                    Button {
+                        withAnimation(.snappy) { showDNSImport.toggle() }
+                    } label: {
+                        Label(showDNSImport ? "Hide Import" : "Import / Add Servers", systemImage: "plus.circle.fill")
+                    }
+
+                    Button {
+                        PPSRDoHService.shared.enableAll()
+                        vm.log("Enabled all DNS providers", level: .success)
+                    } label: {
+                        Label("Enable All", systemImage: "checkmark.circle")
+                    }
+
+                    Button {
+                        PPSRDoHService.shared.resetToDefaults()
+                        vm.log("Reset DNS providers to defaults", level: .success)
+                    } label: {
+                        Label("Reset to Defaults", systemImage: "arrow.uturn.backward")
+                    }
+                } header: {
+                    Text("Actions")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("DNS Manager").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { showDNSManager = false } }
             }
         }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)

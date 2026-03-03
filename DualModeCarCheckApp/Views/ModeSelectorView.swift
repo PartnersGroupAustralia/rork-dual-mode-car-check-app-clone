@@ -4,6 +4,8 @@ struct ModeSelectorView: View {
     @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
     @Binding var hasSelectedMode: Bool
 
+    @State private var animateIn: Bool = false
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
@@ -13,104 +15,148 @@ struct ModeSelectorView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
                     .clipped()
 
-                HStack(spacing: 0) {
-                    Button {
-                        modeRaw = ProductMode.ppsr.rawValue
-                        withAnimation(.spring(duration: 0.4, bounce: 0.2)) {
-                            hasSelectedMode = true
-                        }
-                    } label: {
-                        ppsrSide
-                            .frame(width: geo.size.width / 2, height: geo.size.height)
-                    }
-                    .buttonStyle(.plain)
+                Color.black.opacity(0.55)
 
-                    Button {
-                        modeRaw = ProductMode.login.rawValue
-                        withAnimation(.spring(duration: 0.4, bounce: 0.2)) {
-                            hasSelectedMode = true
+                VStack(spacing: 0) {
+                    Spacer().frame(height: geo.safeAreaInsets.top + 24)
+
+                    Text("SELECT MODE")
+                        .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                        .tracking(4)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.bottom, 20)
+                        .opacity(animateIn ? 1 : 0)
+                        .offset(y: animateIn ? 0 : -10)
+
+                    let cardSpacing: CGFloat = 12
+                    let horizontalPad: CGFloat = 20
+                    let cardWidth = (geo.size.width - horizontalPad * 2 - cardSpacing) / 2
+                    let cardHeight = cardWidth * 1.15
+
+                    VStack(spacing: cardSpacing) {
+                        HStack(spacing: cardSpacing) {
+                            modeCard(
+                                mode: .joe,
+                                icon: "suit.spade.fill",
+                                title: "Joe\nFortune",
+                                subtitle: "Login testing",
+                                color: .green,
+                                width: cardWidth,
+                                height: cardHeight,
+                                delay: 0.05
+                            )
+                            modeCard(
+                                mode: .ignition,
+                                icon: "flame.fill",
+                                title: "Ignition\nCasino",
+                                subtitle: "Login testing",
+                                color: .orange,
+                                width: cardWidth,
+                                height: cardHeight,
+                                delay: 0.1
+                            )
                         }
-                    } label: {
-                        loginSide
-                            .frame(width: geo.size.width / 2, height: geo.size.height)
+                        HStack(spacing: cardSpacing) {
+                            modeCard(
+                                mode: .dual,
+                                icon: "arrow.triangle.branch",
+                                title: "Dual\nMode",
+                                subtitle: "Joe + Ignition",
+                                color: .cyan,
+                                width: cardWidth,
+                                height: cardHeight,
+                                delay: 0.15
+                            )
+                            modeCard(
+                                mode: .ppsr,
+                                icon: "car.side.fill",
+                                title: "PPSR\nCarCheck",
+                                subtitle: "VIN & card testing",
+                                color: .teal,
+                                width: cardWidth,
+                                height: cardHeight,
+                                delay: 0.2
+                            )
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, horizontalPad)
+
+                    Spacer()
+
+                    Text("v8.0")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.2))
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 12)
                 }
             }
         }
         .ignoresSafeArea()
-    }
-
-    private var ppsrSide: some View {
-        ZStack {
-            Color.green.opacity(0.15)
-
-            VStack(spacing: 20) {
-                Image(systemName: "car.side.fill")
-                    .font(.system(size: 52))
-                    .foregroundStyle(.white)
-                    .symbolEffect(.pulse, options: .repeating)
-                    .shadow(color: .green, radius: 10)
-
-                Text("PPSR\nCarCheck")
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
-                    .shadow(color: .black, radius: 4)
-
-                Text("VIN automation\n& card testing")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .multilineTextAlignment(.center)
-                    .shadow(color: .black, radius: 2)
-
-                Image(systemName: "chevron.right.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(.top, 8)
+        .onAppear {
+            withAnimation(.spring(duration: 0.6, bounce: 0.15)) {
+                animateIn = true
             }
-            .padding()
         }
     }
 
-    private var loginSide: some View {
-        ZStack {
-            Color.red.opacity(0.15)
+    private func modeCard(mode: ProductMode, icon: String, title: String, subtitle: String, color: Color, width: CGFloat, height: CGFloat, delay: Double) -> some View {
+        Button {
+            modeRaw = mode.rawValue
+            withAnimation(.spring(duration: 0.4, bounce: 0.2)) {
+                hasSelectedMode = true
+            }
+        } label: {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(
+                        LinearGradient(
+                            colors: [color.opacity(0.25), color.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(color.opacity(0.3), lineWidth: 1)
+                    )
 
-            Rectangle()
-                .fill(.white.opacity(0.03))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(.white.opacity(0.08))
-                        .frame(width: 1)
+                VStack(alignment: .leading, spacing: 0) {
+                    Image(systemName: icon)
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(color)
+                        .symbolEffect(.pulse, options: .repeating.speed(0.5))
+                        .shadow(color: color.opacity(0.5), radius: 8)
+                        .padding(.bottom, 12)
+
+                    Text(title)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineSpacing(2)
+                        .shadow(color: .black.opacity(0.4), radius: 3)
+
+                    Spacer()
+
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+
+                    HStack(spacing: 4) {
+                        Text("ENTER")
+                            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(color.opacity(0.7))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundStyle(color.opacity(0.5))
+                    }
+                    .padding(.top, 4)
                 }
-
-            VStack(spacing: 20) {
-                Image(systemName: "person.badge.key.fill")
-                    .font(.system(size: 52))
-                    .foregroundStyle(.white)
-                    .symbolEffect(.pulse, options: .repeating)
-                    .shadow(color: .red, radius: 10)
-
-                Text("Joe &\nIgnition")
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
-                    .shadow(color: .black, radius: 4)
-
-                Text("Login testing\n& automation")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .multilineTextAlignment(.center)
-                    .shadow(color: .black, radius: 2)
-
-                Image(systemName: "chevron.right.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(.top, 8)
+                .padding(16)
             }
-            .padding()
+            .frame(width: width, height: height)
         }
+        .buttonStyle(.plain)
+        .opacity(animateIn ? 1 : 0)
+        .offset(y: animateIn ? 0 : 20)
+        .animation(.spring(duration: 0.5, bounce: 0.15).delay(delay), value: animateIn)
+        .sensoryFeedback(.impact(weight: .medium), trigger: modeRaw)
     }
 }

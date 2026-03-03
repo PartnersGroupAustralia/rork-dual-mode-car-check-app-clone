@@ -23,13 +23,22 @@ nonisolated struct DoHAnswerEntry: Codable, Sendable {
     let data: String?
 }
 
+struct ManagedDoHProvider: Identifiable {
+    let id: UUID = UUID()
+    let name: String
+    let url: String
+    var isEnabled: Bool
+    let isDefault: Bool
+}
+
 @MainActor
 class PPSRDoHService {
     static let shared = PPSRDoHService()
 
     private var providerIndex: Int = 0
+    private let persistKey = "doh_managed_providers_v1"
 
-    let providers: [DoHProvider] = [
+    static let defaultProviders: [DoHProvider] = [
         DoHProvider(name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query"),
         DoHProvider(name: "Google", url: "https://dns.google/dns-query"),
         DoHProvider(name: "Quad9", url: "https://dns.quad9.net:5053/dns-query"),
@@ -42,12 +51,26 @@ class PPSRDoHService {
         DoHProvider(name: "DNS.SB", url: "https://doh.dns.sb/dns-query"),
     ]
 
+    var managedProviders: [ManagedDoHProvider] = []
+
+    var providers: [DoHProvider] {
+        managedProviders.filter(\.isEnabled).map { DoHProvider(name: $0.name, url: $0.url) }
+    }
+
+    init() {
+        loadManagedProviders()
+    }
+
     var currentProvider: DoHProvider {
-        providers[providerIndex % providers.count]
+        let active = providers
+        guard !active.isEmpty else { return DoHProvider(name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query") }
+        return active[providerIndex % active.count]
     }
 
     func nextProvider() -> DoHProvider {
-        let provider = providers[providerIndex % providers.count]
+        let active = providers
+        guard !active.isEmpty else { return DoHProvider(name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query") }
+        let provider = active[providerIndex % active.count]
         providerIndex += 1
         return provider
     }
@@ -129,5 +152,93 @@ class PPSRDoHService {
 
     func resetRotation() {
         providerIndex = 0
+    }
+
+    func toggleProvider(id: UUID, enabled: Bool) {
+        if let idx = managedProviders.firstIndex(where: { $0.id == id }) {
+            managedProviders[idx].isEnabled = enabled
+            persistManagedProviders()
+        }
+    }
+
+    func addProvider(name: String, url: String) -> Bool {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty, !trimmedName.isEmpty else { return false }
+        guard !managedProviders.contains(where: { $0.url == trimmedURL }) else { return false }
+        managedProviders.append(ManagedDoHProvider(name: trimmedName, url: trimmedURL, isEnabled: true, isDefault: false))
+        persistManagedProviders()
+        return true
+    }
+
+    func bulkImportProviders(_ text: String) -> (added: Int, duplicates: Int, invalid: Int) {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var added = 0
+        var duplicates = 0
+        var invalid = 0
+        for line in lines {
+            let parts = line.components(separatedBy: "|")
+            let urlStr: String
+            let nameStr: String
+            if parts.count >= 2 {
+                nameStr = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                urlStr = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                urlStr = line
+                nameStr = URL(string: line)?.host ?? "Custom"
+            }
+            guard urlStr.hasPrefix("https://"), URL(string: urlStr) != nil else { invalid += 1; continue }
+            if managedProviders.contains(where: { $0.url == urlStr }) {
+                duplicates += 1
+                continue
+            }
+            managedProviders.append(ManagedDoHProvider(name: nameStr, url: urlStr, isEnabled: true, isDefault: false))
+            added += 1
+        }
+        if added > 0 { persistManagedProviders() }
+        return (added, duplicates, invalid)
+    }
+
+    func deleteProvider(id: UUID) {
+        managedProviders.removeAll { $0.id == id }
+        persistManagedProviders()
+    }
+
+    func resetToDefaults() {
+        managedProviders = Self.defaultProviders.map {
+            ManagedDoHProvider(name: $0.name, url: $0.url, isEnabled: true, isDefault: true)
+        }
+        persistManagedProviders()
+    }
+
+    func enableAll() {
+        for i in managedProviders.indices {
+            managedProviders[i].isEnabled = true
+        }
+        persistManagedProviders()
+    }
+
+    private func persistManagedProviders() {
+        let data = managedProviders.map { ["name": $0.name, "url": $0.url, "enabled": $0.isEnabled ? "1" : "0", "default": $0.isDefault ? "1" : "0"] }
+        UserDefaults.standard.set(data, forKey: persistKey)
+    }
+
+    private func loadManagedProviders() {
+        if let saved = UserDefaults.standard.array(forKey: persistKey) as? [[String: String]] {
+            managedProviders = saved.map {
+                ManagedDoHProvider(
+                    name: $0["name"] ?? "Unknown",
+                    url: $0["url"] ?? "",
+                    isEnabled: $0["enabled"] == "1",
+                    isDefault: $0["default"] == "1"
+                )
+            }
+        } else {
+            managedProviders = Self.defaultProviders.map {
+                ManagedDoHProvider(name: $0.name, url: $0.url, isEnabled: true, isDefault: true)
+            }
+        }
     }
 }

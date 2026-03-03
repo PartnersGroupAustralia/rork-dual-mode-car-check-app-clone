@@ -1,6 +1,5 @@
 import SwiftUI
 
-// DualModeCarCheckApp v1.1
 @main
 struct DualModeCarCheckAppApp: App {
     @AppStorage("productMode") private var modeRaw: String = ProductMode.ppsr.rawValue
@@ -19,10 +18,10 @@ struct DualModeCarCheckAppApp: App {
                     .transition(.opacity)
             } else if hasSelectedMode {
                 Group {
-                    if currentMode == .ppsr {
-                        ContentView()
-                    } else {
+                    if currentMode.isLoginMode {
                         LoginContentView()
+                    } else {
+                        ContentView()
                     }
                 }
                 .transition(.opacity)
