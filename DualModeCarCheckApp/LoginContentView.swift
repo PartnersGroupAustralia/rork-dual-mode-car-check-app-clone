@@ -1537,6 +1537,12 @@ struct LoginSettingsContentView: View {
     @State private var ignitionProxyImportReport: ProxyRotationService.ImportReport?
     @State private var isTestingIgnitionProxies: Bool = false
     @State private var showDNSManager: Bool = false
+    @State private var showJoeProxyImport: Bool = false
+    @State private var showIgnitionTargetProxyImport: Bool = false
+    @State private var targetProxyBulkText: String = ""
+    @State private var targetProxyImportReport: ProxyRotationService.ImportReport?
+    @State private var isTestingJoeTargetProxies: Bool = false
+    @State private var isTestingIgnitionTargetProxies: Bool = false
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
 
     private var accentColor: Color {
@@ -1548,11 +1554,10 @@ struct LoginSettingsContentView: View {
             siteToggleSection
             quickActionsSection
             urlRotationSection
-            proxySection
-            ignitionProxySection
+            joeConnectionModeSection
+            ignitionConnectionModeSection
             blacklistSection
             stealthSection
-            dohSection
             concurrencySection
             debugSection
             appearanceSection
@@ -1567,6 +1572,8 @@ struct LoginSettingsContentView: View {
         .sheet(isPresented: $showIgnitionProxyImport) { ignitionProxyImportSheet }
         .sheet(isPresented: $showURLManager) { urlManagerSheet }
         .sheet(isPresented: $showDNSManager) { loginDNSManagerSheet }
+        .sheet(isPresented: $showJoeProxyImport) { targetProxyImportSheet(target: .joe) }
+        .sheet(isPresented: $showIgnitionTargetProxyImport) { targetProxyImportSheet(target: .ignition) }
         .sheet(isPresented: $showDebugScreenshots) {
             NavigationStack {
                 LoginDebugScreenshotsView(vm: vm)
@@ -1683,159 +1690,191 @@ struct LoginSettingsContentView: View {
         }
     }
 
-    private var proxySection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "network").foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Joe Fortune Proxies").font(.body)
-                    Text("\(vm.proxyService.savedProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                proxyStatusBadge(proxies: vm.proxyService.savedProxies)
-            }
+    private var joeConnectionModeSection: some View {
+        connectionModeSection(
+            title: "Joe Fortune",
+            target: .joe,
+            color: .green,
+            icon: "suit.spade.fill",
+            showProxyImportBinding: $showJoeProxyImport,
+            isTestingBinding: $isTestingJoeTargetProxies
+        )
+    }
 
-            Button { showProxyImport = true } label: {
-                Label("Import Joe Proxies", systemImage: "doc.on.clipboard.fill")
-            }
+    private var ignitionConnectionModeSection: some View {
+        connectionModeSection(
+            title: "Ignition",
+            target: .ignition,
+            color: .orange,
+            icon: "flame.fill",
+            showProxyImportBinding: $showIgnitionTargetProxyImport,
+            isTestingBinding: $isTestingIgnitionTargetProxies
+        )
+    }
 
-            if !vm.proxyService.savedProxies.isEmpty {
-                Button {
-                    guard !isTestingProxies else { return }
-                    isTestingProxies = true
-                    Task {
-                        vm.log("Testing all \(vm.proxyService.savedProxies.count) Joe proxies...")
-                        await vm.proxyService.testAllProxies(forIgnition: false)
-                        let working = vm.proxyService.savedProxies.filter(\.isWorking).count
-                        vm.log("Joe proxy test complete: \(working)/\(vm.proxyService.savedProxies.count) working", level: .success)
-                        isTestingProxies = false
+    private func connectionModeSection(
+        title: String,
+        target: ProxyRotationService.ProxyTarget,
+        color: Color,
+        icon: String,
+        showProxyImportBinding: Binding<Bool>,
+        isTestingBinding: Binding<Bool>
+    ) -> some View {
+        let currentMode = vm.proxyService.connectionMode(for: target)
+        let proxyList = vm.proxyService.proxies(for: target)
+        return Section {
+            Picker(selection: Binding(
+                get: { vm.proxyService.connectionMode(for: target) },
+                set: { newMode in
+                    withAnimation(.spring(duration: 0.3)) {
+                        vm.proxyService.setConnectionMode(newMode, for: target)
                     }
-                } label: {
-                    HStack {
-                        Label("Test Joe Proxies", systemImage: "antenna.radiowaves.left.and.right")
-                        if isTestingProxies { Spacer(); ProgressView().controlSize(.small) }
+                    vm.log("\(title) switched to \(newMode.label) mode", level: .success)
+                }
+            )) {
+                ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: icon).foregroundStyle(color)
+                    Text("\(title) Connection")
+                }
+            }
+            .pickerStyle(.menu)
+            .sensoryFeedback(.impact(weight: .medium), trigger: currentMode)
+
+            if currentMode == .proxy {
+                HStack(spacing: 10) {
+                    Image(systemName: "network").foregroundStyle(color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(title) Proxies").font(.body)
+                        Text("\(proxyList.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
                     }
-                }
-                .disabled(isTestingProxies)
-
-                Button {
-                    let exported = vm.proxyService.exportProxies(forIgnition: false)
-                    UIPasteboard.general.string = exported
-                    vm.log("Exported \(vm.proxyService.savedProxies.count) Joe proxies to clipboard", level: .success)
-                } label: {
-                    Label("Export to Clipboard", systemImage: "doc.on.doc")
+                    Spacer()
+                    proxyStatusBadge(proxies: proxyList)
                 }
 
-                let deadCount = vm.proxyService.savedProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                if deadCount > 0 {
-                    Button(role: .destructive) {
-                        vm.proxyService.removeDead(forIgnition: false)
-                        vm.log("Removed \(deadCount) dead Joe proxies")
+                Button { showProxyImportBinding.wrappedValue = true } label: {
+                    Label("Import Proxies", systemImage: "doc.on.clipboard.fill")
+                }
+
+                if !proxyList.isEmpty {
+                    Button {
+                        guard !isTestingBinding.wrappedValue else { return }
+                        isTestingBinding.wrappedValue = true
+                        Task {
+                            vm.log("Testing all \(proxyList.count) \(title) proxies...")
+                            await vm.proxyService.testAllProxies(target: target)
+                            let working = vm.proxyService.proxies(for: target).filter(\.isWorking).count
+                            vm.log("\(title) proxy test: \(working)/\(proxyList.count) working", level: .success)
+                            isTestingBinding.wrappedValue = false
+                        }
                     } label: {
-                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                        HStack {
+                            Label("Test Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                            if isTestingBinding.wrappedValue { Spacer(); ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(isTestingBinding.wrappedValue)
+
+                    Button {
+                        let exported = vm.proxyService.exportProxies(target: target)
+                        UIPasteboard.general.string = exported
+                        vm.log("Exported \(proxyList.count) \(title) proxies to clipboard", level: .success)
+                    } label: {
+                        Label("Export to Clipboard", systemImage: "doc.on.doc")
+                    }
+
+                    let deadCount = proxyList.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                    if deadCount > 0 {
+                        Button(role: .destructive) {
+                            vm.proxyService.removeDead(target: target)
+                            vm.log("Removed \(deadCount) dead \(title) proxies")
+                        } label: {
+                            Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                        }
+                    }
+
+                    ForEach(proxyList) { proxy in
+                        targetProxyRow(proxy: proxy, target: target)
+                    }
+
+                    Button {
+                        vm.proxyService.resetAllStatus(target: target)
+                        vm.log("Reset all \(title) proxy statuses")
+                    } label: {
+                        Label("Reset All Status", systemImage: "arrow.counterclockwise")
+                    }
+
+                    Button(role: .destructive) {
+                        vm.proxyService.removeAll(target: target)
+                        vm.log("Cleared all \(title) proxies")
+                    } label: {
+                        Label("Clear All Proxies", systemImage: "trash")
                     }
                 }
-
-                ForEach(vm.proxyService.savedProxies) { proxy in
-                    proxyRow(proxy: proxy, forIgnition: false)
+            } else {
+                let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                let total = PPSRDoHService.shared.managedProviders.count
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DoH DNS Rotation").font(.body)
+                        Text("\(enabled)/\(total) providers enabled").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 }
 
-                Button {
-                    vm.proxyService.resetAllStatus(forIgnition: false)
-                    vm.log("Reset all Joe proxy statuses")
-                } label: {
-                    Label("Reset All Status", systemImage: "arrow.counterclockwise")
-                }
-
-                Button(role: .destructive) {
-                    vm.proxyService.removeAll(forIgnition: false)
-                    vm.log("Cleared all Joe proxies")
-                } label: {
-                    Label("Clear All Joe Proxies", systemImage: "trash")
+                Button { showDNSManager = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "server.rack").foregroundStyle(.cyan)
+                        Text("Manage DNS Servers")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
                 }
             }
         } header: {
-            Text("Joe Fortune Proxies")
+            HStack {
+                Text("\(title) Connection")
+                Spacer()
+                Text(currentMode.label)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(currentMode == .proxy ? color : .cyan)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background((currentMode == .proxy ? color : .cyan).opacity(0.12))
+                    .clipShape(Capsule())
+            }
         } footer: {
-            Text("SOCKS5 proxies used for Joe Fortune login testing.")
+            Text(currentMode == .proxy ? "\(title) uses SOCKS5 proxies for all connections. DNS mode is disabled." : "\(title) uses DoH DNS rotation for connections. Proxy mode is disabled.")
         }
     }
 
-    private var ignitionProxySection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "network").foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Ignition Proxies").font(.body)
-                    Text("\(vm.proxyService.ignitionProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                proxyStatusBadge(proxies: vm.proxyService.ignitionProxies)
-            }
-
-            Button { showIgnitionProxyImport = true } label: {
-                Label("Import Ignition Proxies", systemImage: "doc.on.clipboard.fill")
-            }
-
-            if !vm.proxyService.ignitionProxies.isEmpty {
-                Button {
-                    guard !isTestingIgnitionProxies else { return }
-                    isTestingIgnitionProxies = true
-                    Task {
-                        vm.log("Testing all \(vm.proxyService.ignitionProxies.count) Ignition proxies...")
-                        await vm.proxyService.testAllProxies(forIgnition: true)
-                        let working = vm.proxyService.ignitionProxies.filter(\.isWorking).count
-                        vm.log("Ignition proxy test complete: \(working)/\(vm.proxyService.ignitionProxies.count) working", level: .success)
-                        isTestingIgnitionProxies = false
-                    }
-                } label: {
-                    HStack {
-                        Label("Test Ignition Proxies", systemImage: "antenna.radiowaves.left.and.right")
-                        if isTestingIgnitionProxies { Spacer(); ProgressView().controlSize(.small) }
+    private func targetProxyRow(proxy: ProxyConfig, target: ProxyRotationService.ProxyTarget) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(proxyStatusColor(proxy))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proxy.displayString)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(proxy.statusLabel)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(proxyStatusColor(proxy))
+                    if let date = proxy.lastTested {
+                        Text(date, style: .relative)
+                            .font(.caption2).foregroundStyle(.quaternary)
                     }
                 }
-                .disabled(isTestingIgnitionProxies)
-
-                Button {
-                    let exported = vm.proxyService.exportProxies(forIgnition: true)
-                    UIPasteboard.general.string = exported
-                    vm.log("Exported \(vm.proxyService.ignitionProxies.count) Ignition proxies to clipboard", level: .success)
-                } label: {
-                    Label("Export to Clipboard", systemImage: "doc.on.doc")
-                }
-
-                let deadCount = vm.proxyService.ignitionProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                if deadCount > 0 {
-                    Button(role: .destructive) {
-                        vm.proxyService.removeDead(forIgnition: true)
-                        vm.log("Removed \(deadCount) dead Ignition proxies")
-                    } label: {
-                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
-                    }
-                }
-
-                ForEach(vm.proxyService.ignitionProxies) { proxy in
-                    proxyRow(proxy: proxy, forIgnition: true)
-                }
-
-                Button {
-                    vm.proxyService.resetAllStatus(forIgnition: true)
-                    vm.log("Reset all Ignition proxy statuses")
-                } label: {
-                    Label("Reset All Status", systemImage: "arrow.counterclockwise")
-                }
-
-                Button(role: .destructive) {
-                    vm.proxyService.removeAll(forIgnition: true)
-                    vm.log("Cleared all Ignition proxies")
-                } label: {
-                    Label("Clear All Ignition Proxies", systemImage: "trash")
-                }
             }
-        } header: {
-            Text("Ignition Proxies")
-        } footer: {
-            Text("Separate SOCKS5 proxies used exclusively for Ignition Casino login testing.")
+            Spacer()
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { vm.proxyService.removeProxy(proxy, target: target) } label: { Label("Delete", systemImage: "trash") }
         }
     }
 
@@ -1859,32 +1898,6 @@ struct LoginSettingsContentView: View {
                 .padding(.horizontal, 6).padding(.vertical, 3)
                 .background(Color(.tertiarySystemFill)).clipShape(Capsule())
             }
-        }
-    }
-
-    private func proxyRow(proxy: ProxyConfig, forIgnition: Bool) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(proxyStatusColor(proxy))
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(proxy.displayString)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(proxy.statusLabel)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(proxyStatusColor(proxy))
-                    if let date = proxy.lastTested {
-                        Text(date, style: .relative)
-                            .font(.caption2).foregroundStyle(.quaternary)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) { vm.proxyService.removeProxy(proxy, fromIgnition: forIgnition) } label: { Label("Delete", systemImage: "trash") }
         }
     }
 
@@ -1913,34 +1926,106 @@ struct LoginSettingsContentView: View {
         }
     }
 
-    private var dohSection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Secure DoH DNS Rotation").font(.body)
-                    let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
-                    let total = PPSRDoHService.shared.managedProviders.count
-                    Text("\(enabled)/\(total) providers enabled").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: vm.stealthEnabled ? "checkmark.circle.fill" : "xmark.circle")
-                    .foregroundStyle(vm.stealthEnabled ? .green : .secondary)
-            }
-
-            Button { showDNSManager = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "server.rack").foregroundStyle(.cyan)
-                    Text("Manage DNS Servers")
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        } header: {
-            Text("DNS-over-HTTPS")
-        } footer: {
-            Text(vm.stealthEnabled ? "Each test resolves through a different DoH provider." : "Enable Ultra Stealth to activate DoH rotation.")
+    private func targetProxyImportSheet(target: ProxyRotationService.ProxyTarget) -> some View {
+        let targetName: String
+        let targetColor: Color
+        switch target {
+        case .joe: targetName = "Joe Fortune"; targetColor = .green
+        case .ignition: targetName = "Ignition"; targetColor = .orange
+        case .ppsr: targetName = "PPSR"; targetColor = .blue
         }
+        return NavigationStack {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle().fill(targetColor).frame(width: 10, height: 10)
+                        Text("Import \(targetName) SOCKS5 Proxies").font(.headline)
+                    }
+                    Text("Paste proxies in any common format, one per line.").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        if let clipboard = UIPasteboard.general.string, !clipboard.isEmpty {
+                            targetProxyBulkText = clipboard
+                        }
+                    } label: {
+                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    let lineCount = targetProxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                    if lineCount > 0 {
+                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+
+                TextEditor(text: $targetProxyBulkText)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 200)
+                    .overlay(alignment: .topLeading) {
+                        if targetProxyBulkText.isEmpty {
+                            Text("Paste SOCKS5 proxies here...\n\n127.0.0.1:1080\nuser:pass@proxy.com:9050")
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.quaternary)
+                                .padding(.horizontal, 14).padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                if let report = targetProxyImportReport {
+                    HStack(spacing: 12) {
+                        if report.added > 0 {
+                            Label("\(report.added) added", systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(.green)
+                        }
+                        if report.duplicates > 0 {
+                            Label("\(report.duplicates) duplicates", systemImage: "arrow.triangle.2.circlepath").font(.caption.bold()).foregroundStyle(.orange)
+                        }
+                        if !report.failed.isEmpty {
+                            Label("\(report.failed.count) failed", systemImage: "xmark.circle.fill").font(.caption.bold()).foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("\(targetName) Proxies").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        if target == .joe { showJoeProxyImport = false }
+                        else { showIgnitionTargetProxyImport = false }
+                        targetProxyBulkText = ""
+                        targetProxyImportReport = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let report = vm.proxyService.bulkImportSOCKS5(targetProxyBulkText, for: target)
+                        targetProxyImportReport = report
+                        if report.added > 0 {
+                            vm.log("Imported \(report.added) \(targetName) SOCKS5 proxies", level: .success)
+                        }
+                        targetProxyBulkText = ""
+                        if report.failed.isEmpty && report.added > 0 {
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                if target == .joe { showJoeProxyImport = false }
+                                else { showIgnitionTargetProxyImport = false }
+                                targetProxyImportReport = nil
+                            }
+                        }
+                    }
+                    .disabled(targetProxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 
     private var introVideoSection: some View {

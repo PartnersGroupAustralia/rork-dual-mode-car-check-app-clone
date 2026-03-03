@@ -11,14 +11,20 @@ struct PPSRSettingsView: View {
     @State private var cropH: String = ""
     @State private var showCropEditor: Bool = false
     @State private var showDNSManager: Bool = false
+    @State private var showPPSRProxyImport: Bool = false
+    @State private var ppsrProxyBulkText: String = ""
+    @State private var ppsrProxyImportReport: ProxyRotationService.ImportReport?
+    @State private var isTestingPPSRProxies: Bool = false
+
+    private let proxyService = ProxyRotationService.shared
 
     var body: some View {
         List {
             importSection
             automationSection
             concurrencySection
+            connectionModeSection
             stealthSection
-            dohSection
             emailSection
             screenshotSection
             debugSection
@@ -33,6 +39,194 @@ struct PPSRSettingsView: View {
         .sheet(isPresented: $showEmailImport) { emailImportSheet }
         .sheet(isPresented: $showCropEditor) { cropEditorSheet }
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
+        .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
+    }
+
+    private var connectionModeSection: some View {
+        let currentMode = proxyService.connectionMode(for: .ppsr)
+        let proxyList = proxyService.proxies(for: .ppsr)
+        return Section {
+            Picker(selection: Binding(
+                get: { proxyService.connectionMode(for: .ppsr) },
+                set: { newMode in
+                    withAnimation(.spring(duration: 0.3)) {
+                        proxyService.setConnectionMode(newMode, for: .ppsr)
+                    }
+                    vm.log("PPSR switched to \(newMode.label) mode", level: .success)
+                }
+            )) {
+                ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "bolt.shield.fill").foregroundStyle(.blue)
+                    Text("PPSR Connection")
+                }
+            }
+            .pickerStyle(.menu)
+            .sensoryFeedback(.impact(weight: .medium), trigger: currentMode)
+
+            if currentMode == .proxy {
+                HStack(spacing: 10) {
+                    Image(systemName: "network").foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("PPSR Proxies").font(.body)
+                        Text("\(proxyList.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    proxyStatusBadge(proxies: proxyList)
+                }
+
+                Button { showPPSRProxyImport = true } label: {
+                    Label("Import Proxies", systemImage: "doc.on.clipboard.fill")
+                }
+
+                if !proxyList.isEmpty {
+                    Button {
+                        guard !isTestingPPSRProxies else { return }
+                        isTestingPPSRProxies = true
+                        Task {
+                            vm.log("Testing all \(proxyList.count) PPSR proxies...")
+                            await proxyService.testAllProxies(target: .ppsr)
+                            let working = proxyService.proxies(for: .ppsr).filter(\.isWorking).count
+                            vm.log("PPSR proxy test: \(working)/\(proxyList.count) working", level: .success)
+                            isTestingPPSRProxies = false
+                        }
+                    } label: {
+                        HStack {
+                            Label("Test Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                            if isTestingPPSRProxies { Spacer(); ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(isTestingPPSRProxies)
+
+                    Button {
+                        let exported = proxyService.exportProxies(target: .ppsr)
+                        UIPasteboard.general.string = exported
+                        vm.log("Exported \(proxyList.count) PPSR proxies to clipboard", level: .success)
+                    } label: {
+                        Label("Export to Clipboard", systemImage: "doc.on.doc")
+                    }
+
+                    let deadCount = proxyList.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                    if deadCount > 0 {
+                        Button(role: .destructive) {
+                            proxyService.removeDead(target: .ppsr)
+                            vm.log("Removed \(deadCount) dead PPSR proxies")
+                        } label: {
+                            Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                        }
+                    }
+
+                    ForEach(proxyList) { proxy in
+                        ppsrProxyRow(proxy: proxy)
+                    }
+
+                    Button {
+                        proxyService.resetAllStatus(target: .ppsr)
+                        vm.log("Reset all PPSR proxy statuses")
+                    } label: {
+                        Label("Reset All Status", systemImage: "arrow.counterclockwise")
+                    }
+
+                    Button(role: .destructive) {
+                        proxyService.removeAll(target: .ppsr)
+                        vm.log("Cleared all PPSR proxies")
+                    } label: {
+                        Label("Clear All Proxies", systemImage: "trash")
+                    }
+                }
+            } else {
+                let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+                let total = PPSRDoHService.shared.managedProviders.count
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DoH DNS Rotation").font(.body)
+                        Text("\(enabled)/\(total) providers enabled · rotates each test").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+
+                Button { showDNSManager = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "server.rack").foregroundStyle(.cyan)
+                        Text("Manage DNS Servers")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text("PPSR Connection")
+                Spacer()
+                Text(currentMode.label)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(currentMode == .proxy ? .blue : .cyan)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background((currentMode == .proxy ? Color.blue : .cyan).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        } footer: {
+            Text(currentMode == .proxy ? "PPSR uses SOCKS5 proxies for all connections. DNS mode is disabled." : "PPSR uses DoH DNS rotation for connections. Proxy mode is disabled.")
+        }
+    }
+
+    private func ppsrProxyRow(proxy: ProxyConfig) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(proxyStatusColor(proxy))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proxy.displayString)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(proxy.statusLabel)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(proxyStatusColor(proxy))
+                    if let date = proxy.lastTested {
+                        Text(date, style: .relative)
+                            .font(.caption2).foregroundStyle(.quaternary)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { proxyService.removeProxy(proxy, target: .ppsr) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    private func proxyStatusBadge(proxies: [ProxyConfig]) -> some View {
+        Group {
+            if !proxies.isEmpty {
+                HStack(spacing: 4) {
+                    let working = proxies.filter(\.isWorking).count
+                    if working > 0 {
+                        Text("\(working) ok")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.green)
+                    }
+                    let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                    if dead > 0 {
+                        Text("\(dead) dead")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Color(.tertiarySystemFill)).clipShape(Capsule())
+            }
+        }
+    }
+
+    private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
+        if proxy.lastTested == nil { return .gray }
+        return proxy.isWorking ? .green : .red
     }
 
     private var stealthSection: some View {
@@ -52,36 +246,6 @@ struct PPSRSettingsView: View {
             Text("Stealth")
         } footer: {
             Text(vm.stealthEnabled ? "Each session uses a unique browser identity. Canvas, WebGL, timezone and navigator properties are spoofed." : "Enable to rotate browser fingerprints across sessions.")
-        }
-    }
-
-    private var dohSection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Secure DoH DNS Rotation").font(.body)
-                    let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
-                    let total = PPSRDoHService.shared.managedProviders.count
-                    Text("\(enabled)/\(total) providers enabled · rotates each test").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: vm.stealthEnabled ? "checkmark.circle.fill" : "xmark.circle")
-                    .foregroundStyle(vm.stealthEnabled ? .green : .secondary)
-            }
-
-            Button { showDNSManager = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "server.rack").foregroundStyle(.cyan)
-                    Text("Manage DNS Servers")
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        } header: {
-            Text("DNS-over-HTTPS")
-        } footer: {
-            Text(vm.stealthEnabled ? "Each test resolves the target domain through a different secure DoH provider." : "Enable Ultra Stealth Mode to activate DoH DNS rotation.")
         }
     }
 
@@ -397,6 +561,10 @@ struct PPSRSettingsView: View {
             LabeledContent("Engine", value: "WKWebView Live")
             LabeledContent("Storage", value: "Unlimited · Local + iCloud")
             LabeledContent("Stealth") { Text(vm.stealthEnabled ? "Ultra Stealth" : "Standard").foregroundStyle(vm.stealthEnabled ? .purple : .secondary) }
+            LabeledContent("Connection") {
+                Text(proxyService.ppsrConnectionMode.label)
+                    .foregroundStyle(proxyService.ppsrConnectionMode == .proxy ? .blue : .cyan)
+            }
             LabeledContent("Mode") { Text("Live — Real Transactions").foregroundStyle(.orange) }
             Button(role: .destructive) { vm.clearAll() } label: { Label("Clear Session History", systemImage: "trash") }
         } header: {
@@ -485,6 +653,99 @@ struct PPSRSettingsView: View {
                         vm.log("Imported \(count) emails for rotation", level: .success)
                     }
                     .disabled(emailCSVText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    private var ppsrProxyImportSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle().fill(.blue).frame(width: 10, height: 10)
+                        Text("Import PPSR SOCKS5 Proxies").font(.headline)
+                    }
+                    Text("Paste proxies in any common format, one per line.").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        if let clipboard = UIPasteboard.general.string, !clipboard.isEmpty {
+                            ppsrProxyBulkText = clipboard
+                        }
+                    } label: {
+                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    let lineCount = ppsrProxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                    if lineCount > 0 {
+                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+
+                TextEditor(text: $ppsrProxyBulkText)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 200)
+                    .overlay(alignment: .topLeading) {
+                        if ppsrProxyBulkText.isEmpty {
+                            Text("Paste SOCKS5 proxies here...\n\n127.0.0.1:1080\nuser:pass@proxy.com:9050")
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.quaternary)
+                                .padding(.horizontal, 14).padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                if let report = ppsrProxyImportReport {
+                    HStack(spacing: 12) {
+                        if report.added > 0 {
+                            Label("\(report.added) added", systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(.green)
+                        }
+                        if report.duplicates > 0 {
+                            Label("\(report.duplicates) duplicates", systemImage: "arrow.triangle.2.circlepath").font(.caption.bold()).foregroundStyle(.orange)
+                        }
+                        if !report.failed.isEmpty {
+                            Label("\(report.failed.count) failed", systemImage: "xmark.circle.fill").font(.caption.bold()).foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("PPSR Proxies").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showPPSRProxyImport = false
+                        ppsrProxyBulkText = ""
+                        ppsrProxyImportReport = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let report = proxyService.bulkImportSOCKS5(ppsrProxyBulkText, for: .ppsr)
+                        ppsrProxyImportReport = report
+                        if report.added > 0 {
+                            vm.log("Imported \(report.added) PPSR SOCKS5 proxies", level: .success)
+                        }
+                        ppsrProxyBulkText = ""
+                        if report.failed.isEmpty && report.added > 0 {
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                showPPSRProxyImport = false
+                                ppsrProxyImportReport = nil
+                            }
+                        }
+                    }
+                    .disabled(ppsrProxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

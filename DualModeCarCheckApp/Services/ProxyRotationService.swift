@@ -1,17 +1,48 @@
 import Foundation
 import Observation
 
+nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
+    case dns = "DNS"
+    case proxy = "Proxy"
+
+    var icon: String {
+        switch self {
+        case .dns: "lock.shield.fill"
+        case .proxy: "network"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .dns: "DNS-over-HTTPS"
+        case .proxy: "SOCKS5 Proxy"
+        }
+    }
+}
+
 @Observable
 @MainActor
 class ProxyRotationService {
     static let shared = ProxyRotationService()
 
+    nonisolated enum ProxyTarget: String, Sendable {
+        case joe
+        case ignition
+        case ppsr
+    }
+
     var savedProxies: [ProxyConfig] = []
     var ignitionProxies: [ProxyConfig] = []
+    var ppsrProxies: [ProxyConfig] = []
     var currentProxyIndex: Int = 0
     var currentIgnitionProxyIndex: Int = 0
+    var currentPPSRProxyIndex: Int = 0
     var rotateAfterDisabled: Bool = true
     var lastImportReport: ImportReport?
+
+    var joeConnectionMode: ConnectionMode = .dns
+    var ignitionConnectionMode: ConnectionMode = .dns
+    var ppsrConnectionMode: ConnectionMode = .dns
 
     struct ImportReport {
         let added: Int
@@ -22,27 +53,51 @@ class ProxyRotationService {
 
     private let persistKey = "saved_socks5_proxies_v2"
     private let ignitionPersistKey = "saved_socks5_proxies_ignition_v1"
+    private let ppsrPersistKey = "saved_socks5_proxies_ppsr_v1"
+    private let connectionModePersistKey = "connection_modes_v1"
 
     init() {
         loadProxies()
         loadIgnitionProxies()
+        loadPPSRProxies()
+        loadConnectionModes()
+    }
+
+    func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {
+        switch target {
+        case .joe: joeConnectionMode = mode
+        case .ignition: ignitionConnectionMode = mode
+        case .ppsr: ppsrConnectionMode = mode
+        }
+        persistConnectionModes()
+    }
+
+    func connectionMode(for target: ProxyTarget) -> ConnectionMode {
+        switch target {
+        case .joe: joeConnectionMode
+        case .ignition: ignitionConnectionMode
+        case .ppsr: ppsrConnectionMode
+        }
+    }
+
+    func proxies(for target: ProxyTarget) -> [ProxyConfig] {
+        switch target {
+        case .joe: savedProxies
+        case .ignition: ignitionProxies
+        case .ppsr: ppsrProxies
+        }
+    }
+
+    func bulkImportSOCKS5(_ text: String, for target: ProxyTarget) -> ImportReport {
+        switch target {
+        case .joe: return bulkImportSOCKS5(text, forIgnition: false)
+        case .ignition: return bulkImportSOCKS5(text, forIgnition: true)
+        case .ppsr: return bulkImportSOCKS5PPSR(text)
+        }
     }
 
     func bulkImportSOCKS5(_ text: String, forIgnition: Bool = false) -> ImportReport {
-        let rawLines = text.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        var expandedLines: [String] = []
-        for line in rawLines {
-            if line.contains("\t") {
-                expandedLines.append(contentsOf: line.components(separatedBy: "\t").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-            } else if line.contains(" ") && !line.contains("://") {
-                expandedLines.append(contentsOf: line.components(separatedBy: " ").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-            } else {
-                expandedLines.append(line)
-            }
-        }
+        let expandedLines = expandProxyLines(text)
 
         var added = 0
         var duplicates = 0
@@ -74,6 +129,51 @@ class ProxyRotationService {
         let report = ImportReport(added: added, duplicates: duplicates, failed: failed)
         lastImportReport = report
         return report
+    }
+
+    private func bulkImportSOCKS5PPSR(_ text: String) -> ImportReport {
+        let expandedLines = expandProxyLines(text)
+
+        var added = 0
+        var duplicates = 0
+        var failed: [String] = []
+
+        for line in expandedLines {
+            if let proxy = parseProxyLine(line) {
+                let isDuplicate = ppsrProxies.contains { $0.host == proxy.host && $0.port == proxy.port && $0.username == proxy.username }
+                if isDuplicate {
+                    duplicates += 1
+                } else {
+                    ppsrProxies.append(proxy)
+                    added += 1
+                }
+            } else {
+                failed.append(line)
+            }
+        }
+
+        if added > 0 { persistPPSRProxies() }
+        let report = ImportReport(added: added, duplicates: duplicates, failed: failed)
+        lastImportReport = report
+        return report
+    }
+
+    private func expandProxyLines(_ text: String) -> [String] {
+        let rawLines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var expandedLines: [String] = []
+        for line in rawLines {
+            if line.contains("\t") {
+                expandedLines.append(contentsOf: line.components(separatedBy: "\t").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+            } else if line.contains(" ") && !line.contains("://") {
+                expandedLines.append(contentsOf: line.components(separatedBy: " ").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+            } else {
+                expandedLines.append(line)
+            }
+        }
+        return expandedLines
     }
 
     private func parseProxyLine(_ raw: String) -> ProxyConfig? {
@@ -166,6 +266,14 @@ class ProxyRotationService {
         }
     }
 
+    func nextWorkingProxy(for target: ProxyTarget) -> ProxyConfig? {
+        switch target {
+        case .joe: return nextWorkingProxy(forIgnition: false)
+        case .ignition: return nextWorkingProxy(forIgnition: true)
+        case .ppsr: return nextWorkingPPSRProxy()
+        }
+    }
+
     func nextWorkingProxy(forIgnition: Bool = false) -> ProxyConfig? {
         if forIgnition {
             let working = ignitionProxies.filter(\.isWorking)
@@ -187,6 +295,17 @@ class ProxyRotationService {
         return proxy
     }
 
+    private func nextWorkingPPSRProxy() -> ProxyConfig? {
+        let working = ppsrProxies.filter(\.isWorking)
+        guard !working.isEmpty else {
+            return ppsrProxies.isEmpty ? nil : ppsrProxies[currentPPSRProxyIndex % ppsrProxies.count]
+        }
+        currentPPSRProxyIndex = currentPPSRProxyIndex % working.count
+        let proxy = working[currentPPSRProxyIndex]
+        currentPPSRProxyIndex += 1
+        return proxy
+    }
+
     func markProxyWorking(_ proxy: ProxyConfig) {
         if let idx = savedProxies.firstIndex(where: { $0.id == proxy.id }) {
             savedProxies[idx].isWorking = true
@@ -199,6 +318,12 @@ class ProxyRotationService {
             ignitionProxies[idx].lastTested = Date()
             ignitionProxies[idx].failCount = 0
             persistIgnitionProxies()
+        }
+        if let idx = ppsrProxies.firstIndex(where: { $0.id == proxy.id }) {
+            ppsrProxies[idx].isWorking = true
+            ppsrProxies[idx].lastTested = Date()
+            ppsrProxies[idx].failCount = 0
+            persistPPSRProxies()
         }
     }
 
@@ -219,6 +344,14 @@ class ProxyRotationService {
             }
             persistIgnitionProxies()
         }
+        if let idx = ppsrProxies.firstIndex(where: { $0.id == proxy.id }) {
+            ppsrProxies[idx].failCount += 1
+            ppsrProxies[idx].lastTested = Date()
+            if ppsrProxies[idx].failCount >= 3 {
+                ppsrProxies[idx].isWorking = false
+            }
+            persistPPSRProxies()
+        }
     }
 
     func removeProxy(_ proxy: ProxyConfig, fromIgnition: Bool = false) {
@@ -228,6 +361,20 @@ class ProxyRotationService {
         } else {
             savedProxies.removeAll { $0.id == proxy.id }
             persistProxies()
+        }
+    }
+
+    func removeProxy(_ proxy: ProxyConfig, target: ProxyTarget) {
+        switch target {
+        case .joe:
+            savedProxies.removeAll { $0.id == proxy.id }
+            persistProxies()
+        case .ignition:
+            ignitionProxies.removeAll { $0.id == proxy.id }
+            persistIgnitionProxies()
+        case .ppsr:
+            ppsrProxies.removeAll { $0.id == proxy.id }
+            persistPPSRProxies()
         }
     }
 
@@ -243,6 +390,17 @@ class ProxyRotationService {
         }
     }
 
+    func removeAll(target: ProxyTarget) {
+        switch target {
+        case .joe: removeAll(forIgnition: false)
+        case .ignition: removeAll(forIgnition: true)
+        case .ppsr:
+            ppsrProxies.removeAll()
+            currentPPSRProxyIndex = 0
+            persistPPSRProxies()
+        }
+    }
+
     func removeDead(forIgnition: Bool = false) {
         if forIgnition {
             ignitionProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
@@ -250,6 +408,16 @@ class ProxyRotationService {
         } else {
             savedProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
             persistProxies()
+        }
+    }
+
+    func removeDead(target: ProxyTarget) {
+        switch target {
+        case .joe: removeDead(forIgnition: false)
+        case .ignition: removeDead(forIgnition: true)
+        case .ppsr:
+            ppsrProxies.removeAll { !$0.isWorking && $0.lastTested != nil }
+            persistPPSRProxies()
         }
     }
 
@@ -268,6 +436,20 @@ class ProxyRotationService {
                 savedProxies[i].failCount = 0
             }
             persistProxies()
+        }
+    }
+
+    func resetAllStatus(target: ProxyTarget) {
+        switch target {
+        case .joe: resetAllStatus(forIgnition: false)
+        case .ignition: resetAllStatus(forIgnition: true)
+        case .ppsr:
+            for i in ppsrProxies.indices {
+                ppsrProxies[i].isWorking = false
+                ppsrProxies[i].lastTested = nil
+                ppsrProxies[i].failCount = 0
+            }
+            persistPPSRProxies()
         }
     }
 
@@ -318,6 +500,35 @@ class ProxyRotationService {
         }
     }
 
+    func testAllProxies(target: ProxyTarget) async {
+        switch target {
+        case .joe: await testAllProxies(forIgnition: false)
+        case .ignition: await testAllProxies(forIgnition: true)
+        case .ppsr:
+            let maxConcurrent = 5
+            let proxySnapshot = ppsrProxies
+            await withTaskGroup(of: (UUID, Bool).self) { group in
+                var launched = 0
+                for proxy in proxySnapshot {
+                    if launched >= maxConcurrent {
+                        if let result = await group.next() {
+                            applyPPSRTestResult(result)
+                        }
+                    }
+                    group.addTask {
+                        let working = await self.testSingleProxy(proxy)
+                        return (proxy.id, working)
+                    }
+                    launched += 1
+                }
+                for await result in group {
+                    applyPPSRTestResult(result)
+                }
+            }
+            persistPPSRProxies()
+        }
+    }
+
     private func applyTestResult(_ result: (UUID, Bool), forIgnition: Bool) {
         let (proxyId, working) = result
         if forIgnition {
@@ -334,6 +545,16 @@ class ProxyRotationService {
                 if working { savedProxies[idx].failCount = 0 }
                 else { savedProxies[idx].failCount += 1 }
             }
+        }
+    }
+
+    private func applyPPSRTestResult(_ result: (UUID, Bool)) {
+        let (proxyId, working) = result
+        if let idx = ppsrProxies.firstIndex(where: { $0.id == proxyId }) {
+            ppsrProxies[idx].isWorking = working
+            ppsrProxies[idx].lastTested = Date()
+            if working { ppsrProxies[idx].failCount = 0 }
+            else { ppsrProxies[idx].failCount += 1 }
         }
     }
 
@@ -380,14 +601,20 @@ class ProxyRotationService {
 
     func exportProxies(forIgnition: Bool = false) -> String {
         let list = forIgnition ? ignitionProxies : savedProxies
-        return list.map { proxy in
-            var result = ""
+        return formatProxyList(list)
+    }
+
+    func exportProxies(target: ProxyTarget) -> String {
+        formatProxyList(proxies(for: target))
+    }
+
+    private func formatProxyList(_ list: [ProxyConfig]) -> String {
+        list.map { proxy in
             if let u = proxy.username, let p = proxy.password {
-                result = "socks5://\(u):\(p)@\(proxy.host):\(proxy.port)"
+                return "socks5://\(u):\(p)@\(proxy.host):\(proxy.port)"
             } else {
-                result = "socks5://\(proxy.host):\(proxy.port)"
+                return "socks5://\(proxy.host):\(proxy.port)"
             }
-            return result
         }.joined(separator: "\n")
     }
 
@@ -400,47 +627,27 @@ class ProxyRotationService {
     }
 
     private func persistIgnitionProxies() {
-        let encoded = ignitionProxies.map { p -> [String: Any] in
-            var dict: [String: Any] = [
-                "id": p.id.uuidString,
-                "host": p.host,
-                "port": p.port,
-                "isWorking": p.isWorking,
-                "failCount": p.failCount,
-            ]
-            if let u = p.username { dict["username"] = u }
-            if let pw = p.password { dict["password"] = pw }
-            if let d = p.lastTested { dict["lastTested"] = d.timeIntervalSince1970 }
-            return dict
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: encoded) {
-            UserDefaults.standard.set(data, forKey: ignitionPersistKey)
-        }
+        persistProxyList(ignitionProxies, key: ignitionPersistKey)
     }
 
     private func loadIgnitionProxies() {
-        guard let data = UserDefaults.standard.data(forKey: ignitionPersistKey),
-              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-        ignitionProxies = array.compactMap { dict -> ProxyConfig? in
-            guard let host = dict["host"] as? String,
-                  let port = dict["port"] as? Int else { return nil }
-            var proxy = ProxyConfig(
-                host: host,
-                port: port,
-                username: dict["username"] as? String,
-                password: dict["password"] as? String
-            )
-            proxy.isWorking = dict["isWorking"] as? Bool ?? false
-            proxy.failCount = dict["failCount"] as? Int ?? 0
-            if let ts = dict["lastTested"] as? TimeInterval {
-                proxy.lastTested = Date(timeIntervalSince1970: ts)
-            }
-            return proxy
-        }
+        ignitionProxies = loadProxyList(key: ignitionPersistKey)
     }
 
     private func persistProxies() {
-        let encoded = savedProxies.map { p -> [String: Any] in
+        persistProxyList(savedProxies, key: persistKey)
+    }
+
+    private func persistPPSRProxies() {
+        persistProxyList(ppsrProxies, key: ppsrPersistKey)
+    }
+
+    private func loadPPSRProxies() {
+        ppsrProxies = loadProxyList(key: ppsrPersistKey)
+    }
+
+    private func persistProxyList(_ list: [ProxyConfig], key: String) {
+        let encoded = list.map { p -> [String: Any] in
             var dict: [String: Any] = [
                 "id": p.id.uuidString,
                 "host": p.host,
@@ -454,18 +661,14 @@ class ProxyRotationService {
             return dict
         }
         if let data = try? JSONSerialization.data(withJSONObject: encoded) {
-            UserDefaults.standard.set(data, forKey: persistKey)
+            UserDefaults.standard.set(data, forKey: key)
         }
     }
 
-    private func loadProxies() {
-        guard let data = UserDefaults.standard.data(forKey: persistKey),
-              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            migrateFromV1()
-            return
-        }
-
-        savedProxies = array.compactMap { dict -> ProxyConfig? in
+    private func loadProxyList(key: String) -> [ProxyConfig] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return array.compactMap { dict -> ProxyConfig? in
             guard let host = dict["host"] as? String,
                   let port = dict["port"] as? Int else { return nil }
             var proxy = ProxyConfig(
@@ -480,6 +683,31 @@ class ProxyRotationService {
                 proxy.lastTested = Date(timeIntervalSince1970: ts)
             }
             return proxy
+        }
+    }
+
+    private func persistConnectionModes() {
+        let dict: [String: String] = [
+            "joe": joeConnectionMode.rawValue,
+            "ignition": ignitionConnectionMode.rawValue,
+            "ppsr": ppsrConnectionMode.rawValue,
+        ]
+        UserDefaults.standard.set(dict, forKey: connectionModePersistKey)
+    }
+
+    private func loadConnectionModes() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: connectionModePersistKey) as? [String: String] else { return }
+        if let joe = dict["joe"], let mode = ConnectionMode(rawValue: joe) { joeConnectionMode = mode }
+        if let ign = dict["ignition"], let mode = ConnectionMode(rawValue: ign) { ignitionConnectionMode = mode }
+        if let ppsr = dict["ppsr"], let mode = ConnectionMode(rawValue: ppsr) { ppsrConnectionMode = mode }
+    }
+
+    private func loadProxies() {
+        let loaded = loadProxyList(key: persistKey)
+        if !loaded.isEmpty {
+            savedProxies = loaded
+        } else {
+            migrateFromV1()
         }
     }
 
