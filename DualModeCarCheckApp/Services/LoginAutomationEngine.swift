@@ -162,7 +162,7 @@ class LoginAutomationEngine {
         try? await Task.sleep(for: .milliseconds(500))
 
         let maxSubmitCycles = 4
-        var finalOutcome: LoginOutcome = .unsure
+        var finalOutcome: LoginOutcome = .noAcc
         var lastEvaluation: EvaluationResult?
 
         for cycle in 1...maxSubmitCycles {
@@ -313,7 +313,7 @@ class LoginAutomationEngine {
 
             attempt.logs.append(PPSRLogEntry(
                 message: "Cycle \(cycle) evaluation: \(evaluation.outcome) (score: \(evaluation.score), signals: \(evaluation.signals.count)) — \(evaluation.reason)",
-                level: evaluation.outcome == .success ? .success : evaluation.outcome == .unsure ? .warning : .error
+                level: evaluation.outcome == .success ? .success : evaluation.outcome == .noAcc ? .warning : .error
             ))
 
             switch evaluation.outcome {
@@ -346,10 +346,10 @@ class LoginAutomationEngine {
 
             default:
                 if cycle < maxSubmitCycles {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): uncertain — retrying (\(maxSubmitCycles - cycle) cycles left)", level: .warning))
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): no clear result — retrying (\(maxSubmitCycles - cycle) cycles left)", level: .warning))
                     try? await Task.sleep(for: .seconds(Double(cycle) * 1.5))
                 }
-                finalOutcome = .unsure
+                finalOutcome = .noAcc
             }
         }
 
@@ -376,13 +376,9 @@ class LoginAutomationEngine {
             return .noAcc
 
         default:
-            attempt.status = .failed
-            attempt.errorMessage = "Unsure after \(maxSubmitCycles) submit cycles — \(eval?.reason ?? "no clear signals"). Auto-requeuing."
-            attempt.completedAt = Date()
-            let pageContent = await session.getPageContent()
-            let snippet = String(pageContent.prefix(200))
-            onUnusualFailure?("Unsure login result for \(attempt.credential.username) after \(maxSubmitCycles) cycles: \(snippet)")
-            return .unsure
+            attempt.logs.append(PPSRLogEntry(message: "NO ACC after \(maxSubmitCycles) cycles (ambiguous fail assumed no account): \(eval?.reason ?? "unknown")", level: .error))
+            failAttempt(attempt, message: "No account — ambiguous result defaulted to no acc after \(maxSubmitCycles) attempts")
+            return .noAcc
         }
     }
 
@@ -576,15 +572,15 @@ class LoginAutomationEngine {
             )
         }
 
-        // DEFAULT: No Welcome! text, no redirect, no clear error = FAIL (uncertain)
-        // This prevents false positives — the temporary banner was NOT observed
+        // DEFAULT: No Welcome! text, no redirect, no clear error = NO ACC
+        // Ambiguous failures are assumed to be no account unless disabled text is present
         let maxScore = max(successScore, max(incorrectScore, disabledScore))
         let allSignals = successSignals + incorrectSignals + disabledSignals
         let snippet = String(pageContent.prefix(150)).replacingOccurrences(of: "\n", with: " ")
         return EvaluationResult(
-            outcome: .unsure,
+            outcome: .noAcc,
             score: maxScore,
-            reason: "NO Welcome! text captured, NO homepage redirect (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
+            reason: "No account (ambiguous fail) — no Welcome! text, no redirect (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
             signals: allSignals
         )
     }
