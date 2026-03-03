@@ -4,11 +4,13 @@ import Observation
 nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
     case dns = "DNS"
     case proxy = "Proxy"
+    case openvpn = "OpenVPN"
 
     var icon: String {
         switch self {
         case .dns: "lock.shield.fill"
         case .proxy: "network"
+        case .openvpn: "shield.lefthalf.filled"
         }
     }
 
@@ -16,6 +18,7 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
         switch self {
         case .dns: "DNS-over-HTTPS"
         case .proxy: "SOCKS5 Proxy"
+        case .openvpn: "OpenVPN"
         }
     }
 }
@@ -34,6 +37,10 @@ class ProxyRotationService {
     var savedProxies: [ProxyConfig] = []
     var ignitionProxies: [ProxyConfig] = []
     var ppsrProxies: [ProxyConfig] = []
+
+    var joeVPNConfigs: [OpenVPNConfig] = []
+    var ignitionVPNConfigs: [OpenVPNConfig] = []
+    var ppsrVPNConfigs: [OpenVPNConfig] = []
     var currentProxyIndex: Int = 0
     var currentIgnitionProxyIndex: Int = 0
     var currentPPSRProxyIndex: Int = 0
@@ -56,11 +63,16 @@ class ProxyRotationService {
     private let ppsrPersistKey = "saved_socks5_proxies_ppsr_v1"
     private let connectionModePersistKey = "connection_modes_v1"
 
+    private let joeVPNPersistKey = "openvpn_configs_joe_v1"
+    private let ignitionVPNPersistKey = "openvpn_configs_ignition_v1"
+    private let ppsrVPNPersistKey = "openvpn_configs_ppsr_v1"
+
     init() {
         loadProxies()
         loadIgnitionProxies()
         loadPPSRProxies()
         loadConnectionModes()
+        loadVPNConfigs()
     }
 
     func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {
@@ -700,6 +712,87 @@ class ProxyRotationService {
         if let joe = dict["joe"], let mode = ConnectionMode(rawValue: joe) { joeConnectionMode = mode }
         if let ign = dict["ignition"], let mode = ConnectionMode(rawValue: ign) { ignitionConnectionMode = mode }
         if let ppsr = dict["ppsr"], let mode = ConnectionMode(rawValue: ppsr) { ppsrConnectionMode = mode }
+    }
+
+    func vpnConfigs(for target: ProxyTarget) -> [OpenVPNConfig] {
+        switch target {
+        case .joe: joeVPNConfigs
+        case .ignition: ignitionVPNConfigs
+        case .ppsr: ppsrVPNConfigs
+        }
+    }
+
+    func importVPNConfig(_ config: OpenVPNConfig, for target: ProxyTarget) {
+        switch target {
+        case .joe:
+            guard !joeVPNConfigs.contains(where: { $0.remoteHost == config.remoteHost && $0.remotePort == config.remotePort }) else { return }
+            joeVPNConfigs.append(config)
+        case .ignition:
+            guard !ignitionVPNConfigs.contains(where: { $0.remoteHost == config.remoteHost && $0.remotePort == config.remotePort }) else { return }
+            ignitionVPNConfigs.append(config)
+        case .ppsr:
+            guard !ppsrVPNConfigs.contains(where: { $0.remoteHost == config.remoteHost && $0.remotePort == config.remotePort }) else { return }
+            ppsrVPNConfigs.append(config)
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    func removeVPNConfig(_ config: OpenVPNConfig, target: ProxyTarget) {
+        switch target {
+        case .joe: joeVPNConfigs.removeAll { $0.id == config.id }
+        case .ignition: ignitionVPNConfigs.removeAll { $0.id == config.id }
+        case .ppsr: ppsrVPNConfigs.removeAll { $0.id == config.id }
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    func toggleVPNConfig(_ config: OpenVPNConfig, target: ProxyTarget, enabled: Bool) {
+        switch target {
+        case .joe:
+            if let idx = joeVPNConfigs.firstIndex(where: { $0.id == config.id }) { joeVPNConfigs[idx].isEnabled = enabled }
+        case .ignition:
+            if let idx = ignitionVPNConfigs.firstIndex(where: { $0.id == config.id }) { ignitionVPNConfigs[idx].isEnabled = enabled }
+        case .ppsr:
+            if let idx = ppsrVPNConfigs.firstIndex(where: { $0.id == config.id }) { ppsrVPNConfigs[idx].isEnabled = enabled }
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    func clearAllVPNConfigs(target: ProxyTarget) {
+        switch target {
+        case .joe: joeVPNConfigs.removeAll()
+        case .ignition: ignitionVPNConfigs.removeAll()
+        case .ppsr: ppsrVPNConfigs.removeAll()
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    private func persistVPNConfigs(for target: ProxyTarget) {
+        let key: String
+        let configs: [OpenVPNConfig]
+        switch target {
+        case .joe: key = joeVPNPersistKey; configs = joeVPNConfigs
+        case .ignition: key = ignitionVPNPersistKey; configs = ignitionVPNConfigs
+        case .ppsr: key = ppsrVPNPersistKey; configs = ppsrVPNConfigs
+        }
+        if let data = try? JSONEncoder().encode(configs) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func loadVPNConfigs() {
+        if let data = UserDefaults.standard.data(forKey: joeVPNPersistKey),
+           let configs = try? JSONDecoder().decode([OpenVPNConfig].self, from: data) {
+            joeVPNConfigs = configs
+        }
+        if let data = UserDefaults.standard.data(forKey: ignitionVPNPersistKey),
+           let configs = try? JSONDecoder().decode([OpenVPNConfig].self, from: data) {
+            ignitionVPNConfigs = configs
+        }
+        if let data = UserDefaults.standard.data(forKey: ppsrVPNPersistKey),
+           let configs = try? JSONDecoder().decode([OpenVPNConfig].self, from: data) {
+            ppsrVPNConfigs = configs
+        }
     }
 
     private func loadProxies() {

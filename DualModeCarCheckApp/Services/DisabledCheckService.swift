@@ -82,67 +82,88 @@ class DisabledCheckService {
     }
 
     private func checkSingleEmail(_ email: String) async -> DisabledCheckResult {
-        for attempt in 1...2 {
+        for attempt in 1...3 {
             let session = LoginSiteWebSession(targetURL: forgotPasswordURL)
             session.stealthEnabled = true
             session.setUp(wipeAll: true)
 
-            let loaded = await session.loadPage(timeout: 15)
+            let loaded = await session.loadPage(timeout: 20)
             guard loaded else {
                 session.tearDown(wipeAll: true)
-                if attempt < 2 {
+                if attempt < 3 {
                     addLog("Retrying page load for \(email) (attempt \(attempt))", level: .warning)
-                    try? await Task.sleep(for: .seconds(1))
+                    try? await Task.sleep(for: .seconds(Double.random(in: 0.8...1.5)))
                     continue
                 }
-                addLog("Failed to load forgot-password page for \(email) after 2 attempts", level: .warning)
+                addLog("Failed to load forgot-password page for \(email) after 3 attempts", level: .warning)
                 return DisabledCheckResult(email: email, isDisabled: false, responseText: "Page load failed")
             }
 
             await session.dismissCookieNotices()
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .milliseconds(Int.random(in: 300...700)))
 
             let fillResult = await session.fillForgotPasswordEmail(email)
             guard fillResult.success else {
                 session.tearDown(wipeAll: true)
-                if attempt < 2 {
+                if attempt < 3 {
                     addLog("Retrying fill for \(email) (attempt \(attempt))", level: .warning)
-                    try? await Task.sleep(for: .seconds(1))
+                    try? await Task.sleep(for: .seconds(Double.random(in: 0.8...1.5)))
                     continue
                 }
                 addLog("Failed to fill email for \(email): \(fillResult.detail)", level: .warning)
                 return DisabledCheckResult(email: email, isDisabled: false, responseText: "Fill failed: \(fillResult.detail)")
             }
 
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(Int.random(in: 200...500)))
 
-            let submitResult = await session.clickForgotPasswordSubmit()
-            guard submitResult.success else {
+            var submitSucceeded = false
+            for submitAttempt in 1...3 {
+                let submitResult = await session.clickForgotPasswordSubmit()
+                if submitResult.success {
+                    submitSucceeded = true
+                    addLog("Submit \(submitResult.detail) for \(email) on try \(submitAttempt)")
+                    break
+                }
+                addLog("Submit attempt \(submitAttempt) failed for \(email): \(submitResult.detail)", level: .warning)
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 300...600)))
+            }
+
+            guard submitSucceeded else {
                 session.tearDown(wipeAll: true)
-                if attempt < 2 {
-                    addLog("Retrying submit for \(email) (attempt \(attempt))", level: .warning)
-                    try? await Task.sleep(for: .seconds(1))
+                if attempt < 3 {
+                    addLog("All submit attempts failed for \(email), retrying full flow (attempt \(attempt))", level: .warning)
+                    try? await Task.sleep(for: .seconds(Double.random(in: 1.0...2.0)))
                     continue
                 }
-                addLog("Failed to submit for \(email): \(submitResult.detail)", level: .warning)
-                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Submit failed: \(submitResult.detail)")
+                addLog("Failed to submit for \(email) after all retries", level: .error)
+                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Submit failed after all retries")
             }
 
-            try? await Task.sleep(for: .seconds(1.5))
+            var pageContent = ""
+            let pollStart = Date()
+            let pollTimeout: TimeInterval = 8
+            while Date().timeIntervalSince(pollStart) < pollTimeout {
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 400...800)))
+                pageContent = await session.getPageContent()
+                let contentLower = pageContent.lowercased()
+                if contentLower.contains("currently disabled") || contentLower.contains("account is currently disabled") {
+                    session.tearDown(wipeAll: true)
+                    return DisabledCheckResult(email: email, isDisabled: true, responseText: "Account is currently disabled")
+                }
+                if contentLower.contains("information was correct") || contentLower.contains("email will be sent") {
+                    session.tearDown(wipeAll: true)
+                    return DisabledCheckResult(email: email, isDisabled: false, responseText: "Account active or no account")
+                }
+                if contentLower.contains("error") || contentLower.contains("invalid") || contentLower.contains("try again") {
+                    break
+                }
+            }
 
-            let pageContent = await session.getPageContent()
             session.tearDown(wipeAll: true)
-            let contentLower = pageContent.lowercased()
 
-            if contentLower.contains("currently disabled") || contentLower.contains("account is currently disabled") {
-                return DisabledCheckResult(email: email, isDisabled: true, responseText: "Account is currently disabled")
-            } else if contentLower.contains("information was correct") || contentLower.contains("email will be sent") {
-                return DisabledCheckResult(email: email, isDisabled: false, responseText: "Account active or no account")
-            }
-
-            if attempt < 2 && pageContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                addLog("Empty response for \(email), retrying", level: .warning)
-                try? await Task.sleep(for: .seconds(1))
+            if attempt < 3 && pageContent.trimmingCharacters(in: .whitespacesAndNewlines).count < 50 {
+                addLog("Insufficient response for \(email), retrying (attempt \(attempt))", level: .warning)
+                try? await Task.sleep(for: .seconds(Double.random(in: 1.0...2.0)))
                 continue
             }
 

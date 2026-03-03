@@ -45,15 +45,6 @@ struct LoginContentView: View {
                 .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
-            if vm.debugMode {
-                Tab("Debug", systemImage: "ladybug.fill") {
-                    NavigationStack {
-                        LoginDebugScreenshotsView(vm: vm)
-                    }
-                    .overlay(alignment: .bottomLeading) { MainMenuButton() }
-                }
-            }
-
             Tab("More", systemImage: "ellipsis.circle") {
                 NavigationStack {
                     LoginMoreMenuView(vm: vm)
@@ -1543,6 +1534,8 @@ struct LoginSettingsContentView: View {
     @State private var targetProxyImportReport: ProxyRotationService.ImportReport?
     @State private var isTestingJoeTargetProxies: Bool = false
     @State private var isTestingIgnitionTargetProxies: Bool = false
+    @State private var showVPNFileImporter: Bool = false
+    @State private var vpnImportTarget: ProxyRotationService.ProxyTarget = .joe
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
 
     private var accentColor: Color {
@@ -1584,6 +1577,31 @@ struct LoginSettingsContentView: View {
                     }
             }
             .presentationDetents([.large])
+        }
+        .fileImporter(isPresented: $showVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                var imported = 0
+                for url in urls {
+                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let data = try? Data(contentsOf: url),
+                       let content = String(data: data, encoding: .utf8) {
+                        let fileName = url.lastPathComponent
+                        if let config = OpenVPNConfig.parse(fileName: fileName, content: content) {
+                            vm.proxyService.importVPNConfig(config, for: vpnImportTarget)
+                            imported += 1
+                        } else {
+                            vm.log("Failed to parse: \(fileName)", level: .warning)
+                        }
+                    }
+                }
+                if imported > 0 {
+                    vm.log("Imported \(imported) OpenVPN config(s)", level: .success)
+                }
+            case .failure(let error):
+                vm.log("VPN import error: \(error.localizedDescription)", level: .error)
+            }
         }
     }
 
@@ -1814,6 +1832,65 @@ struct LoginSettingsContentView: View {
                         Label("Clear All Proxies", systemImage: "trash")
                     }
                 }
+            } else if currentMode == .openvpn {
+                let vpnList = vm.proxyService.vpnConfigs(for: target)
+                HStack(spacing: 10) {
+                    Image(systemName: "shield.lefthalf.filled").foregroundStyle(.indigo)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(title) OpenVPN").font(.body)
+                        Text("\(vpnList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let enabledCount = vpnList.filter(\.isEnabled).count
+                    if enabledCount > 0 {
+                        Text("\(enabledCount) active")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.indigo)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
+                    }
+                }
+
+                Button {
+                    vpnImportTarget = target
+                    showVPNFileImporter = true
+                } label: {
+                    Label("Import .ovpn File", systemImage: "doc.badge.plus")
+                }
+
+                if !vpnList.isEmpty {
+                    ForEach(vpnList) { vpn in
+                        HStack(spacing: 8) {
+                            Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(vpn.isEnabled ? .indigo : .secondary)
+                                .onTapGesture {
+                                    vm.proxyService.toggleVPNConfig(vpn, target: target, enabled: !vpn.isEnabled)
+                                }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(vpn.fileName)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium))
+                                    .lineLimit(1)
+                                Text(vpn.displayString)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                vm.proxyService.removeVPNConfig(vpn, target: target)
+                                vm.log("Removed VPN: \(vpn.fileName)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+
+                    Button(role: .destructive) {
+                        vm.proxyService.clearAllVPNConfigs(target: target)
+                        vm.log("Cleared all \(title) OpenVPN configs")
+                    } label: {
+                        Label("Clear All Configs", systemImage: "trash")
+                    }
+                }
             } else {
                 let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
                 let total = PPSRDoHService.shared.managedProviders.count
@@ -1842,13 +1919,17 @@ struct LoginSettingsContentView: View {
                 Spacer()
                 Text(currentMode.label)
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(currentMode == .proxy ? color : .cyan)
+                    .foregroundStyle(currentMode == .proxy ? color : currentMode == .openvpn ? .indigo : .cyan)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background((currentMode == .proxy ? color : .cyan).opacity(0.12))
+                    .background((currentMode == .proxy ? color : currentMode == .openvpn ? .indigo : .cyan).opacity(0.12))
                     .clipShape(Capsule())
             }
         } footer: {
-            Text(currentMode == .proxy ? "\(title) uses SOCKS5 proxies for all connections. DNS mode is disabled." : "\(title) uses DoH DNS rotation for connections. Proxy mode is disabled.")
+            switch currentMode {
+            case .proxy: Text("\(title) uses SOCKS5 proxies for all connections.")
+            case .openvpn: Text("\(title) uses OpenVPN configs. Import .ovpn files to connect.")
+            case .dns: Text("\(title) uses DoH DNS rotation for connections.")
+            }
         }
     }
 
@@ -2876,6 +2957,36 @@ struct LoginMoreMenuView: View {
                     CredentialExportView(vm: vm)
                 } label: {
                     moreRow(icon: "square.and.arrow.up.fill", title: "Export Credentials", subtitle: "Text or CSV by category", color: .blue)
+                }
+            }
+
+            if vm.debugMode {
+                Section("Debug") {
+                    NavigationLink {
+                        LoginDebugScreenshotsView(vm: vm)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "ladybug.fill")
+                                .font(.title3).foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Debug Screenshots").font(.subheadline.bold())
+                                Text("\(vm.debugScreenshots.count) screenshots captured").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if !vm.debugScreenshots.isEmpty {
+                                let passCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedPass }).count
+                                let failCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedFail }).count
+                                HStack(spacing: 4) {
+                                    if passCount > 0 {
+                                        Text("\(passCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.green)
+                                    }
+                                    if failCount > 0 {
+                                        Text("\(failCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.red)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

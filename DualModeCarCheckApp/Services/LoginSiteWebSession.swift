@@ -806,47 +806,113 @@ class LoginSiteWebSession: NSObject {
     }
 
     func clickForgotPasswordSubmit() async -> (success: Bool, detail: String) {
-        let js = """
+        let humanDelay = Int.random(in: 80...250)
+        try? await Task.sleep(for: .milliseconds(humanDelay))
+
+        let focusJS = """
         (function() {
-            var strategies = [
-                function() {
-                    var btns = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var text = (btns[i].textContent || btns[i].value || '').toLowerCase().trim();
-                        if (text.indexOf('send') !== -1 || text.indexOf('submit') !== -1 || text.indexOf('reset') !== -1 || text.indexOf('recover') !== -1) {
-                            btns[i].click(); return 'CLICKED_TEXT';
-                        }
+            var emailField = document.querySelector('input[type="email"]') || document.querySelector('input[type="text"]');
+            if (emailField) {
+                emailField.dispatchEvent(new Event('blur', {bubbles: true}));
+            }
+            return emailField ? 'BLURRED' : 'NO_FIELD';
+        })();
+        """
+        _ = await executeJS(focusJS)
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 100...300)))
+
+        let strategyJS = """
+        (function() {
+            function humanClick(el) {
+                if (!el) return false;
+                try {
+                    var rect = el.getBoundingClientRect();
+                    var cx = rect.left + rect.width * (0.3 + Math.random() * 0.4);
+                    var cy = rect.top + rect.height * (0.3 + Math.random() * 0.4);
+                    el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    el.focus();
+                    el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch'}));
+                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'touch'}));
+                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+                    el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+                    el.click();
+                    return true;
+                } catch(e) { return false; }
+            }
+
+            var sendTerms = ['send', 'submit', 'reset', 'recover', 'request', 'continue', 'get link', 'email me', 'enviar'];
+            var allClickables = document.querySelectorAll('button, input[type="submit"], a.btn, [role="button"], a[class*="btn"], span[class*="btn"], div[class*="btn"]');
+
+            for (var i = 0; i < allClickables.length; i++) {
+                var text = (allClickables[i].textContent || allClickables[i].value || '').toLowerCase().trim();
+                for (var t = 0; t < sendTerms.length; t++) {
+                    if (text.indexOf(sendTerms[t]) !== -1) {
+                        if (humanClick(allClickables[i])) return 'HUMAN_CLICK_TEXT:' + text;
                     }
-                    return null;
-                },
-                function() {
-                    var btn = document.querySelector('button[type="submit"]');
-                    if (btn) { btn.click(); return 'CLICKED_SUBMIT'; }
-                    return null;
-                },
-                function() {
-                    var btn = document.querySelector('input[type="submit"]');
-                    if (btn) { btn.click(); return 'CLICKED_INPUT_SUBMIT'; }
-                    return null;
-                },
-                function() {
-                    var forms = document.querySelectorAll('form');
-                    if (forms.length > 0) { forms[0].submit(); return 'FORM_SUBMITTED'; }
-                    return null;
                 }
-            ];
-            for (var i = 0; i < strategies.length; i++) {
-                var result = strategies[i]();
-                if (result) return result;
+            }
+
+            var submitBtn = document.querySelector('button[type="submit"]');
+            if (submitBtn && humanClick(submitBtn)) return 'HUMAN_CLICK_SUBMIT_BTN';
+
+            var submitInput = document.querySelector('input[type="submit"]');
+            if (submitInput && humanClick(submitInput)) return 'HUMAN_CLICK_SUBMIT_INPUT';
+
+            var forms = document.querySelectorAll('form');
+            for (var f = 0; f < forms.length; f++) {
+                var hasEmail = forms[f].querySelector('input[type="email"]') || forms[f].querySelector('input[type="text"]');
+                if (hasEmail) {
+                    var formBtn = forms[f].querySelector('button') || forms[f].querySelector('input[type="submit"]');
+                    if (formBtn && humanClick(formBtn)) return 'HUMAN_CLICK_FORM_BTN';
+                }
+            }
+
+            return 'NOT_FOUND';
+        })();
+        """
+        var result = await executeJS(strategyJS)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Submit clicked via: \(result)")
+        }
+
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 150...350)))
+
+        let enterJS = """
+        (function() {
+            var emailField = document.querySelector('input[type="email"]') || document.querySelector('input[type="text"]');
+            if (emailField) {
+                emailField.focus();
+                emailField.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                emailField.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                emailField.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                return 'ENTER_ON_EMAIL';
             }
             return 'NOT_FOUND';
         })();
         """
-        let result = await executeJS(js)
+        result = await executeJS(enterJS)
         if let result, result != "NOT_FOUND" {
-            return (true, "Submit clicked via: \(result)")
+            return (true, "Submit via: \(result)")
         }
-        return (false, "Submit button not found")
+
+        let formSubmitJS = """
+        (function() {
+            var forms = document.querySelectorAll('form');
+            for (var i = 0; i < forms.length; i++) {
+                var hasInput = forms[i].querySelector('input[type="email"]') || forms[i].querySelector('input[type="text"]');
+                if (hasInput) { forms[i].submit(); return 'FORM_SUBMIT_DIRECT'; }
+            }
+            if (forms.length > 0) { forms[0].submit(); return 'FIRST_FORM_SUBMIT'; }
+            return 'NOT_FOUND';
+        })();
+        """
+        result = await executeJS(formSubmitJS)
+        if let result, result != "NOT_FOUND" {
+            return (true, "Submit via: \(result)")
+        }
+
+        return (false, "Submit button not found after all strategies")
     }
 
     func checkLoginButtonReadiness() async -> (isReady: Bool, opacity: Double, detail: String) {

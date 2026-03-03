@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PPSRSettingsView: View {
     @Bindable var vm: PPSRAutomationViewModel
@@ -15,6 +16,7 @@ struct PPSRSettingsView: View {
     @State private var ppsrProxyBulkText: String = ""
     @State private var ppsrProxyImportReport: ProxyRotationService.ImportReport?
     @State private var isTestingPPSRProxies: Bool = false
+    @State private var showPPSRVPNFileImporter: Bool = false
 
     private let proxyService = ProxyRotationService.shared
 
@@ -40,6 +42,31 @@ struct PPSRSettingsView: View {
         .sheet(isPresented: $showCropEditor) { cropEditorSheet }
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
         .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
+        .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                var imported = 0
+                for url in urls {
+                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let data = try? Data(contentsOf: url),
+                       let content = String(data: data, encoding: .utf8) {
+                        let fileName = url.lastPathComponent
+                        if let config = OpenVPNConfig.parse(fileName: fileName, content: content) {
+                            proxyService.importVPNConfig(config, for: .ppsr)
+                            imported += 1
+                        } else {
+                            vm.log("Failed to parse: \(fileName)", level: .warning)
+                        }
+                    }
+                }
+                if imported > 0 {
+                    vm.log("Imported \(imported) PPSR OpenVPN config(s)", level: .success)
+                }
+            case .failure(let error):
+                vm.log("VPN import error: \(error.localizedDescription)", level: .error)
+            }
+        }
     }
 
     private var connectionModeSection: some View {
@@ -137,6 +164,60 @@ struct PPSRSettingsView: View {
                         Label("Clear All Proxies", systemImage: "trash")
                     }
                 }
+            } else if currentMode == .openvpn {
+                let vpnList = proxyService.vpnConfigs(for: .ppsr)
+                HStack(spacing: 10) {
+                    Image(systemName: "shield.lefthalf.filled").foregroundStyle(.indigo)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("PPSR OpenVPN").font(.body)
+                        Text("\(vpnList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let enabledCount = vpnList.filter(\.isEnabled).count
+                    if enabledCount > 0 {
+                        Text("\(enabledCount) active")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.indigo)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
+                    }
+                }
+
+                Button { showPPSRVPNFileImporter = true } label: {
+                    Label("Import .ovpn File", systemImage: "doc.badge.plus")
+                }
+
+                if !vpnList.isEmpty {
+                    ForEach(vpnList) { vpn in
+                        HStack(spacing: 8) {
+                            Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(vpn.isEnabled ? .indigo : .secondary)
+                                .onTapGesture {
+                                    proxyService.toggleVPNConfig(vpn, target: .ppsr, enabled: !vpn.isEnabled)
+                                }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(vpn.fileName)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                                Text(vpn.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                proxyService.removeVPNConfig(vpn, target: .ppsr)
+                                vm.log("Removed VPN: \(vpn.fileName)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+
+                    Button(role: .destructive) {
+                        proxyService.clearAllVPNConfigs(target: .ppsr)
+                        vm.log("Cleared all PPSR OpenVPN configs")
+                    } label: {
+                        Label("Clear All Configs", systemImage: "trash")
+                    }
+                }
             } else {
                 let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
                 let total = PPSRDoHService.shared.managedProviders.count
@@ -165,13 +246,17 @@ struct PPSRSettingsView: View {
                 Spacer()
                 Text(currentMode.label)
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(currentMode == .proxy ? .blue : .cyan)
+                    .foregroundStyle(currentMode == .proxy ? .blue : currentMode == .openvpn ? .indigo : .cyan)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background((currentMode == .proxy ? Color.blue : .cyan).opacity(0.12))
+                    .background((currentMode == .proxy ? Color.blue : currentMode == .openvpn ? .indigo : .cyan).opacity(0.12))
                     .clipShape(Capsule())
             }
         } footer: {
-            Text(currentMode == .proxy ? "PPSR uses SOCKS5 proxies for all connections. DNS mode is disabled." : "PPSR uses DoH DNS rotation for connections. Proxy mode is disabled.")
+            switch currentMode {
+            case .proxy: Text("PPSR uses SOCKS5 proxies for all connections.")
+            case .openvpn: Text("PPSR uses OpenVPN configs. Import .ovpn files to connect.")
+            case .dns: Text("PPSR uses DoH DNS rotation for connections.")
+            }
         }
     }
 
