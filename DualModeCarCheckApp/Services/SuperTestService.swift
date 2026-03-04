@@ -655,18 +655,20 @@ class SuperTestService {
             }
 
             currentItem = wgConfig.displayString
-            let (passed, latency) = await testWGHost(wgConfig)
+            let start = Date()
+            let reachable = await proxyService.testWGEndpointReachability(wgConfig)
+            let latency = Int(Date().timeIntervalSince(start) * 1000)
 
             results.append(SuperTestItemResult(
                 name: "\(wgConfig.displayString) [\(targetLabel)]",
                 category: .wireguardProfiles,
-                passed: passed,
-                latencyMs: passed ? latency : nil,
-                detail: passed ? "Host reachable in \(latency)ms" : "Host unreachable"
+                passed: reachable,
+                latencyMs: reachable ? latency : nil,
+                detail: reachable ? "Endpoint reachable (DNS + TCP) in \(latency)ms" : "Endpoint unreachable"
             ))
 
-            proxyService.toggleWGConfig(wgConfig, target: target, enabled: passed)
-            if !passed {
+            proxyService.markWGConfigReachable(wgConfig, target: target, reachable: reachable)
+            if !reachable {
                 addLog("Auto-disabled WG: \(wgConfig.fileName) [\(targetLabel)]", level: .warning)
                 logger.log("WG FAIL (auto-disabled): \(wgConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
             } else {
@@ -679,40 +681,6 @@ class SuperTestService {
         let passedCount = results.filter { $0.category == .wireguardProfiles && $0.passed }.count
         addLog("WireGuard: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
         updateProgress(0.98)
-    }
-
-    private func testWGHost(_ wgConfig: WireGuardConfig) async -> (Bool, Int) {
-        let host = wgConfig.endpointHost
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 8
-        config.timeoutIntervalForResource = 10
-        let session = URLSession(configuration: config)
-        defer { session.invalidateAndCancel() }
-
-        let start = Date()
-
-        guard let url = URL(string: "https://\(host)") else {
-            return (false, 0)
-        }
-
-        do {
-            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
-            request.httpMethod = "HEAD"
-            let _ = try await session.data(for: request)
-            let latency = Int(Date().timeIntervalSince(start) * 1000)
-            return (true, latency)
-        } catch let error as NSError {
-            if error.domain == NSURLErrorDomain && error.code == NSURLErrorSecureConnectionFailed {
-                let latency = Int(Date().timeIntervalSince(start) * 1000)
-                return (true, latency)
-            }
-            if error.domain == NSURLErrorDomain && error.code == NSURLErrorCannotConnectToHost {
-                return (false, 0)
-            }
-            let latency = Int(Date().timeIntervalSince(start) * 1000)
-            return (latency < 7000, latency)
-        }
     }
 
     // MARK: - Utility Methods

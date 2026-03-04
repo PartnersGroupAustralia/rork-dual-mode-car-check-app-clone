@@ -816,16 +816,12 @@ class ProxyRotationService {
     }
 
     func importWGConfig(_ config: WireGuardConfig, for target: ProxyTarget) {
+        let existing = wgConfigs(for: target)
+        guard !existing.contains(where: { $0.uniqueKey == config.uniqueKey }) else { return }
         switch target {
-        case .joe:
-            guard !joeWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
-            joeWGConfigs.append(config)
-        case .ignition:
-            guard !ignitionWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
-            ignitionWGConfigs.append(config)
-        case .ppsr:
-            guard !ppsrWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
-            ppsrWGConfigs.append(config)
+        case .joe: joeWGConfigs.append(config)
+        case .ignition: ignitionWGConfigs.append(config)
+        case .ppsr: ppsrWGConfigs.append(config)
         }
         persistWGConfigs(for: target)
     }
@@ -834,12 +830,12 @@ class ProxyRotationService {
         var added = 0
         var duplicates = 0
         let failed: [String] = []
-        let existing = wgConfigs(for: target)
+        var seenKeys = Set(wgConfigs(for: target).map(\.uniqueKey))
         for config in configs {
-            let isDuplicate = existing.contains(where: { $0.peerEndpoint == config.peerEndpoint })
-            if isDuplicate {
+            if seenKeys.contains(config.uniqueKey) {
                 duplicates += 1
             } else {
+                seenKeys.insert(config.uniqueKey)
                 switch target {
                 case .joe: joeWGConfigs.append(config)
                 case .ignition: ignitionWGConfigs.append(config)
@@ -856,9 +852,9 @@ class ProxyRotationService {
 
     func removeWGConfig(_ config: WireGuardConfig, target: ProxyTarget) {
         switch target {
-        case .joe: joeWGConfigs.removeAll { $0.id == config.id }
-        case .ignition: ignitionWGConfigs.removeAll { $0.id == config.id }
-        case .ppsr: ppsrWGConfigs.removeAll { $0.id == config.id }
+        case .joe: joeWGConfigs.removeAll { $0.id == config.id || $0.uniqueKey == config.uniqueKey }
+        case .ignition: ignitionWGConfigs.removeAll { $0.id == config.id || $0.uniqueKey == config.uniqueKey }
+        case .ppsr: ppsrWGConfigs.removeAll { $0.id == config.id || $0.uniqueKey == config.uniqueKey }
         }
         persistWGConfigs(for: target)
     }
@@ -866,11 +862,11 @@ class ProxyRotationService {
     func toggleWGConfig(_ config: WireGuardConfig, target: ProxyTarget, enabled: Bool) {
         switch target {
         case .joe:
-            if let idx = joeWGConfigs.firstIndex(where: { $0.id == config.id }) { joeWGConfigs[idx].isEnabled = enabled }
+            if let idx = joeWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) { joeWGConfigs[idx].isEnabled = enabled }
         case .ignition:
-            if let idx = ignitionWGConfigs.firstIndex(where: { $0.id == config.id }) { ignitionWGConfigs[idx].isEnabled = enabled }
+            if let idx = ignitionWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) { ignitionWGConfigs[idx].isEnabled = enabled }
         case .ppsr:
-            if let idx = ppsrWGConfigs.firstIndex(where: { $0.id == config.id }) { ppsrWGConfigs[idx].isEnabled = enabled }
+            if let idx = ppsrWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) { ppsrWGConfigs[idx].isEnabled = enabled }
         }
         persistWGConfigs(for: target)
     }
@@ -882,6 +878,131 @@ class ProxyRotationService {
         case .ppsr: ppsrWGConfigs.removeAll()
         }
         persistWGConfigs(for: target)
+    }
+
+    func markWGConfigReachable(_ config: WireGuardConfig, target: ProxyTarget, reachable: Bool) {
+        switch target {
+        case .joe:
+            if let idx = joeWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) {
+                joeWGConfigs[idx].isReachable = reachable
+                joeWGConfigs[idx].lastTested = Date()
+                if !reachable { joeWGConfigs[idx].isEnabled = false }
+            }
+        case .ignition:
+            if let idx = ignitionWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) {
+                ignitionWGConfigs[idx].isReachable = reachable
+                ignitionWGConfigs[idx].lastTested = Date()
+                if !reachable { ignitionWGConfigs[idx].isEnabled = false }
+            }
+        case .ppsr:
+            if let idx = ppsrWGConfigs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) {
+                ppsrWGConfigs[idx].isReachable = reachable
+                ppsrWGConfigs[idx].lastTested = Date()
+                if !reachable { ppsrWGConfigs[idx].isEnabled = false }
+            }
+        }
+        persistWGConfigs(for: target)
+    }
+
+    func testAllWGConfigs(target: ProxyTarget) async {
+        let configs = wgConfigs(for: target)
+        guard !configs.isEmpty else { return }
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for config in configs {
+                group.addTask {
+                    let reachable = await self.testWGEndpointReachability(config)
+                    return (config.uniqueKey, reachable)
+                }
+            }
+            for await (uniqueKey, reachable) in group {
+                switch target {
+                case .joe:
+                    if let idx = joeWGConfigs.firstIndex(where: { $0.uniqueKey == uniqueKey }) {
+                        joeWGConfigs[idx].isReachable = reachable
+                        joeWGConfigs[idx].lastTested = Date()
+                        if !reachable { joeWGConfigs[idx].isEnabled = false }
+                    }
+                case .ignition:
+                    if let idx = ignitionWGConfigs.firstIndex(where: { $0.uniqueKey == uniqueKey }) {
+                        ignitionWGConfigs[idx].isReachable = reachable
+                        ignitionWGConfigs[idx].lastTested = Date()
+                        if !reachable { ignitionWGConfigs[idx].isEnabled = false }
+                    }
+                case .ppsr:
+                    if let idx = ppsrWGConfigs.firstIndex(where: { $0.uniqueKey == uniqueKey }) {
+                        ppsrWGConfigs[idx].isReachable = reachable
+                        ppsrWGConfigs[idx].lastTested = Date()
+                        if !reachable { ppsrWGConfigs[idx].isEnabled = false }
+                    }
+                }
+            }
+        }
+        persistWGConfigs(for: target)
+    }
+
+    nonisolated func testWGEndpointReachability(_ config: WireGuardConfig) async -> Bool {
+        let host = config.endpointHost
+        let port = config.endpointPort
+
+        let dnsReachable = await resolveHost(host)
+        if !dnsReachable { return false }
+
+        if await testTCPConnection(host: host, port: port, timeoutSeconds: 8) { return true }
+        if await testTCPConnection(host: host, port: 443, timeoutSeconds: 5) { return true }
+        if await testTCPConnection(host: host, port: 80, timeoutSeconds: 5) { return true }
+        return false
+    }
+
+    private nonisolated func resolveHost(_ host: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let hostRef = CFHostCreateWithName(nil, host as CFString).takeRetainedValue()
+            var resolved = DarwinBoolean(false)
+            CFHostStartInfoResolution(hostRef, .addresses, nil)
+            let addresses = CFHostGetAddressing(hostRef, &resolved)
+            if resolved.boolValue, let addrs = addresses?.takeUnretainedValue() as? [Data], !addrs.isEmpty {
+                continuation.resume(returning: true)
+            } else {
+                continuation.resume(returning: false)
+            }
+        }
+    }
+
+    private nonisolated func testTCPConnection(host: String, port: Int, timeoutSeconds: Double) async -> Bool {
+        await withCheckedContinuation { continuation in
+            var readStream: Unmanaged<CFReadStream>?
+            var writeStream: Unmanaged<CFWriteStream>?
+            CFStreamCreatePairWithSocketToHost(nil, host as CFString, UInt32(port), &readStream, &writeStream)
+
+            guard let inputStream = readStream?.takeRetainedValue() as InputStream?,
+                  let outputStream = writeStream?.takeRetainedValue() as OutputStream? else {
+                continuation.resume(returning: false)
+                return
+            }
+
+            inputStream.open()
+            outputStream.open()
+
+            let deadline = Date().addingTimeInterval(timeoutSeconds)
+            var connected = false
+
+            while Date() < deadline {
+                let inStatus = inputStream.streamStatus
+                let outStatus = outputStream.streamStatus
+
+                if inStatus == .error || outStatus == .error { break }
+                if inStatus == .open || outStatus == .open {
+                    connected = true
+                    break
+                }
+
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+
+            inputStream.close()
+            outputStream.close()
+
+            continuation.resume(returning: connected)
+        }
     }
 
     private func persistWGConfigs(for target: ProxyTarget) {

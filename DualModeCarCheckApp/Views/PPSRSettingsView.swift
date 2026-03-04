@@ -81,22 +81,36 @@ struct PPSRSettingsView: View {
             switch result {
             case .success(let urls):
                 var parsed: [WireGuardConfig] = []
+                var failedFiles: [String] = []
                 for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    guard url.startAccessingSecurityScopedResource() else {
+                        failedFiles.append(url.lastPathComponent)
+                        continue
+                    }
                     defer { url.stopAccessingSecurityScopedResource() }
                     if let data = try? Data(contentsOf: url),
                        let content = String(data: data, encoding: .utf8) {
                         let fileName = url.lastPathComponent
-                        if let config = WireGuardConfig.parse(fileName: fileName, content: content) {
-                            parsed.append(config)
+                        let configs = WireGuardConfig.parseMultiple(fileName: fileName, content: content)
+                        if configs.isEmpty {
+                            if let single = WireGuardConfig.parse(fileName: fileName, content: content) {
+                                parsed.append(single)
+                            } else {
+                                failedFiles.append(fileName)
+                            }
                         } else {
-                            vm.log("Failed to parse WG: \(fileName)", level: .warning)
+                            parsed.append(contentsOf: configs)
                         }
+                    } else {
+                        failedFiles.append(url.lastPathComponent)
                     }
                 }
                 if !parsed.isEmpty {
                     let report = proxyService.bulkImportWGConfigs(parsed, for: .ppsr)
                     vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates", level: .success)
+                }
+                for name in failedFiles {
+                    vm.log("Failed to parse WireGuard: \(name)", level: .warning)
                 }
             case .failure(let error):
                 vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
@@ -287,8 +301,13 @@ struct PPSRSettingsView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(wg.fileName)
                                     .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
-                                Text(wg.displayString)
-                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                HStack(spacing: 6) {
+                                    Text(wg.displayString)
+                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                    Text(wg.statusLabel)
+                                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                        .foregroundStyle(wg.isReachable ? .green : (wg.lastTested != nil ? .red : .gray))
+                                }
                             }
                             Spacer()
                         }
@@ -298,6 +317,12 @@ struct PPSRSettingsView: View {
                                 vm.log("Removed WireGuard: \(wg.fileName)")
                             } label: { Label("Delete", systemImage: "trash") }
                         }
+                    }
+
+                    Button {
+                        Task { await proxyService.testAllWGConfigs(target: .ppsr) }
+                    } label: {
+                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
                     }
 
                     Button(role: .destructive) {

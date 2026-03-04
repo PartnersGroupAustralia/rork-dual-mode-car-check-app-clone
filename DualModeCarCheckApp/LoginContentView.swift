@@ -1748,17 +1748,26 @@ struct LoginSettingsContentView: View {
                 var parsed: [WireGuardConfig] = []
                 var failedFiles: [String] = []
                 for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    guard url.startAccessingSecurityScopedResource() else {
+                        failedFiles.append(url.lastPathComponent)
+                        continue
+                    }
                     defer { url.stopAccessingSecurityScopedResource() }
                     if let data = try? Data(contentsOf: url),
                        let content = String(data: data, encoding: .utf8) {
                         let fileName = url.lastPathComponent
-                        if let config = WireGuardConfig.parse(fileName: fileName, content: content) {
-                            parsed.append(config)
+                        let configs = WireGuardConfig.parseMultiple(fileName: fileName, content: content)
+                        if configs.isEmpty {
+                            if let single = WireGuardConfig.parse(fileName: fileName, content: content) {
+                                parsed.append(single)
+                            } else {
+                                failedFiles.append(fileName)
+                            }
                         } else {
-                            failedFiles.append(fileName)
-                            vm.log("Failed to parse WG: \(fileName)", level: .warning)
+                            parsed.append(contentsOf: configs)
                         }
+                    } else {
+                        failedFiles.append(url.lastPathComponent)
                     }
                 }
                 if !parsed.isEmpty {
@@ -2098,9 +2107,14 @@ struct LoginSettingsContentView: View {
                                 Text(wg.fileName)
                                     .font(.system(.caption, design: .monospaced, weight: .medium))
                                     .lineLimit(1)
-                                Text(wg.displayString)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
+                                HStack(spacing: 6) {
+                                    Text(wg.displayString)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                    Text(wg.statusLabel)
+                                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                        .foregroundStyle(wg.isReachable ? .green : (wg.lastTested != nil ? .red : .gray))
+                                }
                             }
                             Spacer()
                         }
@@ -2110,6 +2124,12 @@ struct LoginSettingsContentView: View {
                                 vm.log("Removed WireGuard: \(wg.fileName)")
                             } label: { Label("Delete", systemImage: "trash") }
                         }
+                    }
+
+                    Button {
+                        Task { await vm.proxyService.testAllWGConfigs(target: target) }
+                    } label: {
+                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
                     }
 
                     Button(role: .destructive) {
