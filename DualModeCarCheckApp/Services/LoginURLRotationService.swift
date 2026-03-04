@@ -82,7 +82,17 @@ class LoginURLRotationService {
         "joefortunepokies.net",
     ]
 
-    static let defaultJoeURLStrings: [String] = joeBaseDomains.map { "https://static.\($0)/login" }
+    static let noStaticDomains: Set<String> = [
+        "joefortune24.com",
+        "joefortune36.com",
+    ]
+
+    static let defaultJoeURLStrings: [String] = joeBaseDomains.map { domain in
+        if noStaticDomains.contains(domain) {
+            return "https://\(domain)/login"
+        }
+        return "https://static.\(domain)/login"
+    }
 
     static let defaultIgnitionURLStrings: [String] = [
         "https://ignitioncasino.lat/login",
@@ -171,9 +181,11 @@ class LoginURLRotationService {
     }
 
     func resolveJoeURL(baseDomain: String) async -> String? {
-        let staticURL = "https://static.\(baseDomain)/login"
-        if await pingURL(staticURL) {
-            return staticURL
+        if !Self.noStaticDomains.contains(baseDomain) {
+            let staticURL = "https://static.\(baseDomain)/login"
+            if await pingURL(staticURL) {
+                return staticURL
+            }
         }
         let wwwURL = "https://www.\(baseDomain)/login"
         if await pingURL(wwwURL) {
@@ -198,13 +210,15 @@ class LoginURLRotationService {
                 baseDomain = host
             }
 
-            let staticURL = "https://static.\(baseDomain)/login"
-            if await pingURL(staticURL) {
-                if joeURLs[i].urlString != staticURL {
-                    joeURLs[i] = RotatingURL(urlString: staticURL, isEnabled: true, lastFailure: nil, failCount: 0)
-                    updated += 1
+            if !Self.noStaticDomains.contains(baseDomain) {
+                let staticURL = "https://static.\(baseDomain)/login"
+                if await pingURL(staticURL) {
+                    if joeURLs[i].urlString != staticURL {
+                        joeURLs[i] = RotatingURL(urlString: staticURL, isEnabled: true, lastFailure: nil, failCount: 0)
+                        updated += 1
+                    }
+                    continue
                 }
-                continue
             }
 
             let wwwURL = "https://www.\(baseDomain)/login"
