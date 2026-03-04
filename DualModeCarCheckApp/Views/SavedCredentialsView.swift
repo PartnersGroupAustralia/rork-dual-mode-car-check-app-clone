@@ -11,6 +11,7 @@ struct SavedCredentialsView: View {
     @State private var filterStatus: CardStatus? = nil
     @State private var filterCountry: String? = nil
     @State private var showFilters: Bool = false
+    @State private var viewMode: ViewMode = .list
 
     nonisolated enum SortOption: String, CaseIterable, Identifiable, Sendable {
         case dateAdded = "Date Added"
@@ -66,12 +67,19 @@ struct SavedCredentialsView: View {
         VStack(spacing: 0) {
             sortFilterBar
             if showFilters { filterSection }
-            cardsList
+            if viewMode == .tile {
+                cardsTileGrid
+            } else {
+                cardsList
+            }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Saved Cards")
         .searchable(text: $searchText, prompt: "Search cards, BIN, bank, country...")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .teal)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showImportSheet = true } label: { Image(systemName: "plus") }
             }
@@ -202,6 +210,51 @@ struct SavedCredentialsView: View {
                 }
                 .listStyle(.insetGrouped)
             }
+        }
+    }
+
+    private var cardsTileGrid: some View {
+        Group {
+            if filteredCards.isEmpty {
+                ContentUnavailableView {
+                    Label("No Cards", systemImage: "creditcard.trianglebadge.exclamationmark")
+                } description: {
+                    if vm.cards.isEmpty { Text("Import cards to get started.") }
+                    else { Text("No cards match your filters.") }
+                } actions: {
+                    if vm.cards.isEmpty { Button("Import Cards") { showImportSheet = true } }
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        ForEach(filteredCards) { card in
+                            NavigationLink(value: card.id) {
+                                let screenshot = vm.screenshotsForCard(card.id).first?.image
+                                ScreenshotTileView(
+                                    screenshot: screenshot,
+                                    title: "\(card.brand.rawValue) \(card.number.suffix(4))",
+                                    subtitle: card.formattedExpiry,
+                                    statusColor: cardTileStatusColor(card.status),
+                                    statusText: card.status.rawValue,
+                                    badge: card.totalTests > 0 ? "\(card.successCount)/\(card.totalTests)" : nil
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 32)
+                }
+            }
+        }
+    }
+
+    private func cardTileStatusColor(_ status: CardStatus) -> Color {
+        switch status {
+        case .working: .green
+        case .dead: .red
+        case .testing: .teal
+        case .untested: .secondary
         }
     }
 

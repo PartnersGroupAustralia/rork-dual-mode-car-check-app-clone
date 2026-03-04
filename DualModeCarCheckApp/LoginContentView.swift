@@ -573,6 +573,7 @@ struct LoginCredentialsListView: View {
     @State private var bulkText: String = ""
     @State private var showBulkImport: Bool = false
     @State private var bulkImportResult: String? = nil
+    @State private var viewMode: ViewMode = .list
 
     nonisolated enum SortOption: String, CaseIterable, Identifiable, Sendable {
         case dateAdded = "Date Added"
@@ -611,12 +612,19 @@ struct LoginCredentialsListView: View {
         VStack(spacing: 0) {
             sortFilterBar
             if showBulkImport { bulkImportBox }
-            credentialsList
+            if viewMode == .tile {
+                credentialsTileGrid
+            } else {
+                credentialsList
+            }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Credentials")
         .searchable(text: $searchText, prompt: "Search credentials...")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .green)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     withAnimation(.snappy) { showBulkImport.toggle() }
@@ -797,6 +805,54 @@ struct LoginCredentialsListView: View {
                 }
                 .listStyle(.insetGrouped)
             }
+        }
+    }
+
+    private var credentialsTileGrid: some View {
+        Group {
+            if filteredCredentials.isEmpty {
+                ContentUnavailableView {
+                    Label("No Credentials", systemImage: "person.badge.key")
+                } description: {
+                    if vm.credentials.isEmpty { Text("Import credentials to get started.") }
+                    else { Text("No credentials match your filters.") }
+                } actions: {
+                    if vm.credentials.isEmpty { Button("Import Credentials") { showImportSheet = true } }
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        ForEach(filteredCredentials) { cred in
+                            NavigationLink(value: cred.id) {
+                                let screenshot = vm.screenshotsForCredential(cred.id).first?.image
+                                ScreenshotTileView(
+                                    screenshot: screenshot,
+                                    title: cred.username,
+                                    subtitle: cred.maskedPassword,
+                                    statusColor: credTileStatusColor(cred.status),
+                                    statusText: cred.status.rawValue,
+                                    badge: cred.totalTests > 0 ? "\(cred.successCount)/\(cred.totalTests)" : nil
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 32)
+                }
+            }
+        }
+    }
+
+    private func credTileStatusColor(_ status: CredentialStatus) -> Color {
+        switch status {
+        case .working: .green
+        case .noAcc: .red
+        case .permDisabled: .red.opacity(0.7)
+        case .tempDisabled: .orange
+        case .unsure: .yellow
+        case .testing: .green
+        case .untested: .secondary
         }
     }
 
@@ -1098,6 +1154,8 @@ struct LoginWorkingListView: View {
     @State private var showCopiedToast: Bool = false
     @State private var showFileExporter: Bool = false
     @State private var exportDocument: CardExportDocument?
+    @State private var viewMode: ViewMode = .list
+    @State private var selectedCredential: LoginCredential?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1105,12 +1163,19 @@ struct LoginWorkingListView: View {
                 ContentUnavailableView("No Working Logins", systemImage: "checkmark.shield", description: Text("Credentials that pass login tests will appear here."))
             } else {
                 exportBar
-                credentialsList
+                if viewMode == .tile {
+                    workingTileGrid
+                } else {
+                    credentialsList
+                }
             }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Working Logins")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .green)
+            }
             if !vm.workingCredentials.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -1136,6 +1201,13 @@ struct LoginWorkingListView: View {
             case .success: vm.log("Exported \(vm.workingCredentials.count) working credentials to file", level: .success)
             case .failure(let error): vm.log("Export failed: \(error.localizedDescription)", level: .error)
             }
+        }
+        .sheet(item: $selectedCredential) { cred in
+            NavigationStack {
+                LoginCredentialDetailView(credential: cred, vm: vm)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -1170,6 +1242,33 @@ struct LoginWorkingListView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    private var workingTileGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                ForEach(vm.workingCredentials) { cred in
+                    let latestScreenshot = vm.screenshotsForCredential(cred.id).first?.image
+                    Button { selectedCredential = cred } label: {
+                        ScreenshotTileView(
+                            screenshot: latestScreenshot,
+                            title: cred.username,
+                            subtitle: cred.maskedPassword,
+                            statusColor: .green,
+                            statusText: "Working",
+                            badge: cred.totalTests > 0 ? "\(cred.successCount)/\(cred.totalTests)" : nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button { copyCredential(cred) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                        Button { vm.retestCredential(cred) } label: { Label("Retest", systemImage: "arrow.clockwise") }
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 32)
+        }
     }
 
     private func copyCredential(_ cred: LoginCredential) {
@@ -1243,6 +1342,7 @@ struct LoginSessionMonitorContentView: View {
     let vm: LoginViewModel
     @State private var selectedAttempt: LoginAttempt?
     @State private var filterStatus: FilterOption = .all
+    @State private var viewMode: ViewMode = .list
 
     nonisolated enum FilterOption: String, CaseIterable, Identifiable, Sendable {
         case all = "All"
@@ -1264,10 +1364,21 @@ struct LoginSessionMonitorContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             filterBar
-            sessionList
+            if filteredAttempts.isEmpty {
+                ContentUnavailableView("No Sessions", systemImage: "rectangle.stack", description: Text("Test credentials to see sessions here."))
+            } else if viewMode == .tile {
+                sessionTileGrid
+            } else {
+                sessionListView
+            }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Sessions")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .green)
+            }
+        }
         .sheet(item: $selectedAttempt) { attempt in
             LoginSessionDetailSheet(attempt: attempt)
         }
@@ -1295,17 +1406,43 @@ struct LoginSessionMonitorContentView: View {
         }
     }
 
-    private var sessionList: some View {
-        Group {
-            if filteredAttempts.isEmpty {
-                ContentUnavailableView("No Sessions", systemImage: "rectangle.stack", description: Text("Test credentials to see sessions here."))
-            } else {
-                List(filteredAttempts) { attempt in
-                    Button { selectedAttempt = attempt } label: { LoginSessionRow(attempt: attempt) }
-                        .listRowBackground(Color(.secondarySystemGroupedBackground))
+    private var sessionListView: some View {
+        List(filteredAttempts) { attempt in
+            Button { selectedAttempt = attempt } label: { LoginSessionRow(attempt: attempt) }
+                .listRowBackground(Color(.secondarySystemGroupedBackground))
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var sessionTileGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                ForEach(filteredAttempts) { attempt in
+                    Button { selectedAttempt = attempt } label: {
+                        let latestScreenshot = attempt.responseSnapshot ?? vm.screenshotsForAttempt(attempt).first?.image
+                        ScreenshotTileView(
+                            screenshot: latestScreenshot,
+                            title: attempt.credential.username,
+                            subtitle: "S\(attempt.sessionIndex) · \(attempt.formattedDuration)",
+                            statusColor: attemptStatusColor(attempt.status),
+                            statusText: attempt.status.rawValue,
+                            badge: attempt.hasScreenshot ? "📷" : nil
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-                .listStyle(.insetGrouped)
             }
+            .padding(.horizontal)
+            .padding(.bottom, 32)
+        }
+    }
+
+    private func attemptStatusColor(_ status: LoginAttemptStatus) -> Color {
+        switch status {
+        case .completed: .green
+        case .failed: .red
+        case .queued: .secondary
+        default: .green
         }
     }
 }
@@ -2906,115 +3043,211 @@ struct LoginSettingsContentView: View {
 
 struct LoginMoreMenuView: View {
     let vm: LoginViewModel
+    @State private var showExportSheet: Bool = false
+    @State private var exportDocument: CardExportDocument?
+    @State private var showFileExporter: Bool = false
+    @State private var showCopiedToast: Bool = false
+    @State private var isValidatingURLs: Bool = false
 
     var body: some View {
-        List {
-            Section {
-                NavigationLink {
-                    LoginSettingsContentView(vm: vm)
-                } label: {
-                    moreRow(icon: "gearshape.fill", title: "Settings", subtitle: "Automation, stealth, proxies & more", color: .secondary)
-                }
-            }
-
-            Section("Account Tools") {
-                NavigationLink {
-                    CheckDisabledAccountsView(vm: vm)
-                } label: {
-                    moreRow(icon: "magnifyingglass.circle.fill", title: "Check Disabled Accounts", subtitle: "Fast forgot-password check", color: .orange)
-                }
-
-                NavigationLink {
-                    TempDisabledAccountsView(vm: vm)
-                } label: {
-                    moreRow(icon: "clock.badge.exclamationmark", title: "Temp Disabled Accounts", subtitle: "\(vm.tempDisabledCredentials.count) accounts", color: .orange)
-                }
-            }
-
-            Section("Data") {
-                NavigationLink {
-                    BlacklistView(vm: vm)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "hand.raised.slash.fill")
-                            .font(.title3).foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Blacklist").font(.subheadline.bold())
-                            Text("\(vm.blacklistService.blacklistedEmails.count) blacklisted").font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if vm.blacklistService.autoExcludeBlacklist {
-                            Text("AUTO")
-                                .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                .foregroundStyle(.red)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Color.red.opacity(0.12)).clipShape(Capsule())
-                        }
+        ZStack(alignment: .bottom) {
+            List {
+                Section {
+                    NavigationLink {
+                        LoginSettingsContentView(vm: vm)
+                    } label: {
+                        moreRow(icon: "gearshape.fill", title: "Settings", subtitle: "Automation, stealth, proxies & more", color: .secondary)
                     }
                 }
 
-                NavigationLink {
-                    CredentialExportView(vm: vm)
-                } label: {
-                    moreRow(icon: "square.and.arrow.up.fill", title: "Export Credentials", subtitle: "Text or CSV by category", color: .blue)
-                }
-            }
-
-            if vm.debugMode {
-                Section("Debug") {
+                Section("Account Tools") {
                     NavigationLink {
-                        LoginDebugScreenshotsView(vm: vm)
+                        CheckDisabledAccountsView(vm: vm)
+                    } label: {
+                        moreRow(icon: "magnifyingglass.circle.fill", title: "Check Disabled Accounts", subtitle: "Fast forgot-password check", color: .orange)
+                    }
+
+                    NavigationLink {
+                        TempDisabledAccountsView(vm: vm)
+                    } label: {
+                        moreRow(icon: "clock.badge.exclamationmark", title: "Temp Disabled Accounts", subtitle: "\(vm.tempDisabledCredentials.count) accounts", color: .orange)
+                    }
+                }
+
+                Section("Data") {
+                    NavigationLink {
+                        BlacklistView(vm: vm)
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: "ladybug.fill")
-                                .font(.title3).foregroundStyle(.orange)
+                            Image(systemName: "hand.raised.slash.fill")
+                                .font(.title3).foregroundStyle(.red)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Debug Screenshots").font(.subheadline.bold())
-                                Text("\(vm.debugScreenshots.count) screenshots captured").font(.caption2).foregroundStyle(.secondary)
+                                Text("Blacklist").font(.subheadline.bold())
+                                Text("\(vm.blacklistService.blacklistedEmails.count) blacklisted").font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if !vm.debugScreenshots.isEmpty {
-                                let passCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedPass }).count
-                                let failCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedFail }).count
-                                HStack(spacing: 4) {
-                                    if passCount > 0 {
-                                        Text("\(passCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.green)
-                                    }
-                                    if failCount > 0 {
-                                        Text("\(failCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.red)
+                            if vm.blacklistService.autoExcludeBlacklist {
+                                Text("AUTO")
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(.red)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.red.opacity(0.12)).clipShape(Capsule())
+                            }
+                        }
+                    }
+
+                    NavigationLink {
+                        CredentialExportView(vm: vm)
+                    } label: {
+                        moreRow(icon: "square.and.arrow.up.fill", title: "Export Credentials", subtitle: "Text or CSV by category", color: .blue)
+                    }
+                }
+
+                Section("Comprehensive Export") {
+                    Button {
+                        let text = AppDataExportService.shared.exportComprehensiveState()
+                        UIPasteboard.general.string = text
+                        vm.log("Copied comprehensive state to clipboard", level: .success)
+                        withAnimation(.spring(duration: 0.3)) { showCopiedToast = true }
+                        Task { try? await Task.sleep(for: .seconds(1.5)); withAnimation { showCopiedToast = false } }
+                    } label: {
+                        moreRow(icon: "doc.text.fill", title: "Export Full State", subtitle: "URLs, proxies, DNS, VPN, blacklist, settings", color: .indigo)
+                    }
+
+                    Button {
+                        let text = AppDataExportService.shared.exportTestingHistory(credentials: vm.credentials)
+                        UIPasteboard.general.string = text
+                        vm.log("Copied testing history to clipboard", level: .success)
+                        withAnimation(.spring(duration: 0.3)) { showCopiedToast = true }
+                        Task { try? await Task.sleep(for: .seconds(1.5)); withAnimation { showCopiedToast = false } }
+                    } label: {
+                        moreRow(icon: "clock.arrow.circlepath", title: "Export Testing History", subtitle: "All credential test results", color: .purple)
+                    }
+
+                    Button {
+                        let text = AppDataExportService.shared.exportURLHistory()
+                        UIPasteboard.general.string = text
+                        vm.log("Copied URL history to clipboard", level: .success)
+                        withAnimation(.spring(duration: 0.3)) { showCopiedToast = true }
+                        Task { try? await Task.sleep(for: .seconds(1.5)); withAnimation { showCopiedToast = false } }
+                    } label: {
+                        moreRow(icon: "link.circle.fill", title: "Export URL Performance", subtitle: "Success rates, response times", color: .cyan)
+                    }
+
+                    Button {
+                        let text = AppDataExportService.shared.exportComprehensiveState()
+                        exportDocument = CardExportDocument(text: text)
+                        showFileExporter = true
+                    } label: {
+                        moreRow(icon: "square.and.arrow.up.fill", title: "Export All to File", subtitle: "Save complete state as .txt", color: .blue)
+                    }
+                }
+
+                Section("URL Validation") {
+                    Button {
+                        guard !isValidatingURLs else { return }
+                        isValidatingURLs = true
+                        vm.log("Validating Joe Fortune URLs (static → www fallback)...")
+                        Task {
+                            await vm.urlRotation.validateAndUpdateJoeURLs()
+                            let enabled = vm.urlRotation.joeURLs.filter(\.isEnabled).count
+                            vm.log("Joe URL validation complete: \(enabled)/\(vm.urlRotation.joeURLs.count) active", level: .success)
+                            isValidatingURLs = false
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "checkmark.shield.fill").font(.title3).foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Validate Joe URLs").font(.subheadline.bold())
+                                Text("Prefer static.* subdomain, fallback to www.*").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if isValidatingURLs {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(isValidatingURLs)
+                }
+
+                if vm.debugMode {
+                    Section("Debug") {
+                        NavigationLink {
+                            LoginDebugScreenshotsView(vm: vm)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "ladybug.fill")
+                                    .font(.title3).foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Debug Screenshots").font(.subheadline.bold())
+                                    Text("\(vm.debugScreenshots.count) screenshots captured").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if !vm.debugScreenshots.isEmpty {
+                                    let passCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedPass }).count
+                                    let failCount = vm.debugScreenshots.filter({ $0.effectiveResult == .markedFail }).count
+                                    HStack(spacing: 4) {
+                                        if passCount > 0 {
+                                            Text("\(passCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.green)
+                                        }
+                                        if failCount > 0 {
+                                            Text("\(failCount)").font(.system(.caption2, design: .monospaced, weight: .bold)).foregroundStyle(.red)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            Section("Console") {
-                if vm.globalLogs.isEmpty {
-                    Text("No log entries").foregroundStyle(.tertiary)
-                } else {
-                    ForEach(vm.globalLogs.prefix(50)) { entry in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(entry.formattedTime)
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 80, alignment: .leading)
-                            Text(entry.level.rawValue)
-                                .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                .foregroundStyle(moreLogColor(entry.level))
-                                .frame(width: 36)
-                            Text(entry.message)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.primary)
+                Section("Console") {
+                    if vm.globalLogs.isEmpty {
+                        Text("No log entries").foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(vm.globalLogs.prefix(50)) { entry in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(entry.formattedTime)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 80, alignment: .leading)
+                                Text(entry.level.rawValue)
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(moreLogColor(entry.level))
+                                    .frame(width: 36)
+                                Text(entry.message)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                            }
+                            .listRowSeparator(.hidden)
                         }
-                        .listRowSeparator(.hidden)
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+
+            if showCopiedToast {
+                Text("Copied to clipboard")
+                    .font(.subheadline.bold()).foregroundStyle(.white)
+                    .padding(.horizontal, 20).padding(.vertical, 12)
+                    .background(.green.gradient, in: Capsule())
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.bottom, 20)
+            }
         }
-        .listStyle(.insetGrouped)
         .navigationTitle("More")
+        .fileExporter(isPresented: $showFileExporter, document: exportDocument, contentType: .plainText, defaultFilename: "app_state_\(dateStamp()).txt") { result in
+            switch result {
+            case .success: vm.log("Exported app state to file", level: .success)
+            case .failure(let error): vm.log("Export failed: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+
+    private func dateStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HHmm"
+        return f.string(from: Date())
     }
 
     private func moreRow(icon: String, title: String, subtitle: String, color: Color) -> some View {

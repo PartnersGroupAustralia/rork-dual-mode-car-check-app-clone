@@ -64,23 +64,25 @@ class LoginURLRotationService {
         loadState()
     }
 
-    static let defaultJoeURLStrings: [String] = [
-        "https://joefortune.com/login",
-        "https://joefortune.eu/login",
-        "https://joefortune.club/login",
-        "https://joefortune.eu.com/login",
-        "https://joefortune.fun/login",
-        "https://joefortune.lv/login",
-        "https://joefortune.ooo/login",
-        "https://joefortune24.com/login",
-        "https://joefortune36.com/login",
-        "https://joefortuneonlinepokies.com/login",
-        "https://joefortuneonlinepokies.eu/login",
-        "https://joefortuneonlinepokies.net/login",
-        "https://joefortunepokies.com/login",
-        "https://joefortunepokies.eu/login",
-        "https://joefortunepokies.net/login",
+    static let joeBaseDomains: [String] = [
+        "joefortune.com",
+        "joefortune.eu",
+        "joefortune.club",
+        "joefortune.eu.com",
+        "joefortune.fun",
+        "joefortune.lv",
+        "joefortune.ooo",
+        "joefortune24.com",
+        "joefortune36.com",
+        "joefortuneonlinepokies.com",
+        "joefortuneonlinepokies.eu",
+        "joefortuneonlinepokies.net",
+        "joefortunepokies.com",
+        "joefortunepokies.eu",
+        "joefortunepokies.net",
     ]
+
+    static let defaultJoeURLStrings: [String] = joeBaseDomains.map { "https://static.\($0)/login" }
 
     static let defaultIgnitionURLStrings: [String] = [
         "https://ignitioncasino.lat/login",
@@ -141,6 +143,84 @@ class LoginURLRotationService {
             let url = urls[joeIndex].url
             joeIndex += 1
             return url
+        }
+    }
+
+    func pingURL(_ urlString: String, timeout: TimeInterval = 8) async -> Bool {
+        guard let url = URL(string: urlString) else { return false }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = timeout
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
+        request.httpMethod = "HEAD"
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        do {
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode >= 300 && http.statusCode < 400 {
+                    return false
+                }
+                return http.statusCode >= 200 && http.statusCode < 400
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    func resolveJoeURL(baseDomain: String) async -> String? {
+        let staticURL = "https://static.\(baseDomain)/login"
+        if await pingURL(staticURL) {
+            return staticURL
+        }
+        let wwwURL = "https://www.\(baseDomain)/login"
+        if await pingURL(wwwURL) {
+            return wwwURL
+        }
+        return nil
+    }
+
+    func validateAndUpdateJoeURLs() async {
+        var updated = 0
+        var disabled = 0
+        for i in joeURLs.indices {
+            let urlStr = joeURLs[i].urlString
+            guard let url = URL(string: urlStr), let host = url.host else { continue }
+
+            let baseDomain: String
+            if host.hasPrefix("static.") {
+                baseDomain = String(host.dropFirst(7))
+            } else if host.hasPrefix("www.") {
+                baseDomain = String(host.dropFirst(4))
+            } else {
+                baseDomain = host
+            }
+
+            let staticURL = "https://static.\(baseDomain)/login"
+            if await pingURL(staticURL) {
+                if joeURLs[i].urlString != staticURL {
+                    joeURLs[i] = RotatingURL(urlString: staticURL, isEnabled: true, lastFailure: nil, failCount: 0)
+                    updated += 1
+                }
+                continue
+            }
+
+            let wwwURL = "https://www.\(baseDomain)/login"
+            if await pingURL(wwwURL) {
+                if joeURLs[i].urlString != wwwURL {
+                    joeURLs[i] = RotatingURL(urlString: wwwURL, isEnabled: true, lastFailure: nil, failCount: 0)
+                    updated += 1
+                }
+                continue
+            }
+
+            joeURLs[i].isEnabled = false
+            disabled += 1
+        }
+        if updated > 0 || disabled > 0 {
+            persistState()
         }
     }
 

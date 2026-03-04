@@ -7,6 +7,8 @@ class LoginPersistenceService {
     private let credentialsKey = "saved_login_credentials_v1"
     private let settingsKey = "login_app_settings_v1"
     private let iCloudCredentialsKey = "icloud_login_credentials_v1"
+    private let viewModeKey = "login_view_mode_prefs_v1"
+    private let historyKey = "login_testing_history_v1"
 
     private let store = NSUbiquitousKeyValueStore.default
 

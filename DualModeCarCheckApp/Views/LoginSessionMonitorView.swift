@@ -4,6 +4,7 @@ struct LoginSessionMonitorView: View {
     let vm: PPSRAutomationViewModel
     @State private var selectedCheck: PPSRCheck?
     @State private var filterStatus: FilterOption = .all
+    @State private var viewMode: ViewMode = .list
 
     nonisolated enum FilterOption: String, CaseIterable, Identifiable, Sendable {
         case all = "All"
@@ -25,10 +26,21 @@ struct LoginSessionMonitorView: View {
     var body: some View {
         VStack(spacing: 0) {
             filterBar
-            sessionList
+            if filteredChecks.isEmpty {
+                ContentUnavailableView("No Sessions", systemImage: "rectangle.stack", description: Text("Test cards from the Cards tab to see sessions here."))
+            } else if viewMode == .tile {
+                sessionTileGrid
+            } else {
+                sessionListView
+            }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Sessions")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .teal)
+            }
+        }
         .sheet(item: $selectedCheck) { check in
             SessionDetailSheet(check: check)
         }
@@ -56,17 +68,42 @@ struct LoginSessionMonitorView: View {
         }
     }
 
-    private var sessionList: some View {
-        Group {
-            if filteredChecks.isEmpty {
-                ContentUnavailableView("No Sessions", systemImage: "rectangle.stack", description: Text("Test cards from the Cards tab to see sessions here."))
-            } else {
-                List(filteredChecks) { check in
-                    Button { selectedCheck = check } label: { SessionRowView(check: check) }
-                        .listRowBackground(Color(.secondarySystemGroupedBackground))
+    private var sessionListView: some View {
+        List(filteredChecks) { check in
+            Button { selectedCheck = check } label: { SessionRowView(check: check) }
+                .listRowBackground(Color(.secondarySystemGroupedBackground))
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private var sessionTileGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                ForEach(filteredChecks) { check in
+                    Button { selectedCheck = check } label: {
+                        ScreenshotTileView(
+                            screenshot: check.responseSnapshot,
+                            title: "\(check.card.brand.rawValue) \(check.card.number.suffix(4))",
+                            subtitle: "S\(check.sessionIndex) \u{00b7} \(check.formattedDuration)",
+                            statusColor: checkStatusColor(check.status),
+                            statusText: check.status.rawValue,
+                            badge: !check.screenshotIds.isEmpty ? "\u{1f4f7}" : nil
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-                .listStyle(.insetGrouped)
             }
+            .padding(.horizontal)
+            .padding(.bottom, 32)
+        }
+    }
+
+    private func checkStatusColor(_ status: PPSRCheckStatus) -> Color {
+        switch status {
+        case .completed: .green
+        case .failed: .red
+        case .queued: .secondary
+        default: .teal
         }
     }
 }

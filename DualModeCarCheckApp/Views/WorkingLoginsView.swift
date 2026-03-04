@@ -6,6 +6,7 @@ struct WorkingLoginsView: View {
     @State private var showCopiedToast: Bool = false
     @State private var showFileExporter: Bool = false
     @State private var exportDocument: CardExportDocument?
+    @State private var viewMode: ViewMode = .list
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,12 +14,19 @@ struct WorkingLoginsView: View {
                 ContentUnavailableView("No Working Cards", systemImage: "checkmark.shield", description: Text("Cards that pass PPSR tests will appear here."))
             } else {
                 exportBar
-                cardsList
+                if viewMode == .tile {
+                    workingTileGrid
+                } else {
+                    cardsList
+                }
             }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Working Cards")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewModeToggle(mode: $viewMode, accentColor: .teal)
+            }
             if !vm.workingCards.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -78,6 +86,33 @@ struct WorkingLoginsView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    private var workingTileGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                ForEach(vm.workingCards) { card in
+                    let latestScreenshot = vm.screenshotsForCard(card.id).first?.image
+                    Button { copyCard(card) } label: {
+                        ScreenshotTileView(
+                            screenshot: latestScreenshot,
+                            title: "\(card.brand.rawValue) \(card.number.suffix(4))",
+                            subtitle: card.formattedExpiry,
+                            statusColor: .green,
+                            statusText: "Working",
+                            badge: card.totalTests > 0 ? "\(card.successCount)/\(card.totalTests)" : nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button { copyCard(card) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                        Button { vm.retestCard(card) } label: { Label("Retest", systemImage: "arrow.clockwise") }
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 32)
+        }
     }
 
     private func copyCard(_ card: PPSRCard) {
