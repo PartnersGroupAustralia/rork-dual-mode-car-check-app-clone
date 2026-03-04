@@ -22,9 +22,12 @@ struct MainMenuView: View {
                         joeZone(geo: geo)
                         ignitionZone(geo: geo)
                     }
-                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.62)
+                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.48)
 
                     ppsrZone(geo: geo)
+                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.22)
+
+                    superTestZone(geo: geo)
                         .frame(maxHeight: .infinity)
 
                     Spacer().frame(height: geo.safeAreaInsets.bottom + 4)
@@ -32,7 +35,7 @@ struct MainMenuView: View {
 
                 VStack {
                     Spacer()
-                    Text("v9.0")
+                    Text("v10.0")
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.15))
                         .padding(.bottom, geo.safeAreaInsets.bottom + 6)
@@ -219,10 +222,73 @@ struct MainMenuView: View {
         .offset(y: animateIn ? 0 : 30)
         .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .ppsr)
     }
+
+    private func superTestZone(geo: GeometryProxy) -> some View {
+        Button {
+            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                activeMode = .superTest
+            }
+        } label: {
+            ZStack {
+                LinearGradient(
+                    colors: [.purple.opacity(0.05), .purple.opacity(0.25)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Image(systemName: "bolt.horizontal.circle.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.purple)
+                            .shadow(color: .purple.opacity(0.5), radius: 8)
+
+                        Text("SUPER TEST")
+                            .font(.system(size: 14, weight: .black, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.6), radius: 4)
+
+                        Text("Full Infrastructure")
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.purple.opacity(0.7))
+                    }
+                    .padding(.leading, 20)
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "fingerprint")
+                            Image(systemName: "network")
+                            Image(systemName: "shield.lefthalf.filled")
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.purple.opacity(0.6))
+
+                        HStack(spacing: 3) {
+                            Text("ENTER")
+                                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(.purple.opacity(0.6))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7, weight: .heavy))
+                                .foregroundStyle(.purple.opacity(0.4))
+                        }
+                    }
+                    .padding(.trailing, 20)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(animateIn ? 1 : 0)
+        .offset(y: animateIn ? 0 : 30)
+        .sensoryFeedback(.impact(weight: .medium), trigger: activeMode == .superTest)
+    }
 }
 
 nonisolated enum ActiveAppMode: String, Sendable {
     case joe
     case ignition
     case ppsr
+    case superTest
 }

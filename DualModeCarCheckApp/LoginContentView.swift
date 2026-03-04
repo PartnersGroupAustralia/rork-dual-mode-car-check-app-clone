@@ -60,7 +60,7 @@ struct LoginContentView: View {
                 switch initialMode {
                 case .joe: vm.setSiteMode(.joe)
                 case .ignition: vm.setSiteMode(.ignition)
-                case .ppsr: break
+                case .ppsr, .superTest: break
                 }
             }
         }

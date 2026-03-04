@@ -24,6 +24,8 @@ struct DualModeCarCheckAppApp: App {
                         LoginContentView(initialMode: .ignition)
                     case .ppsr:
                         ContentView()
+                    case .superTest:
+                        SuperTestContainerView()
                     }
                 }
                 .transition(.asymmetric(
