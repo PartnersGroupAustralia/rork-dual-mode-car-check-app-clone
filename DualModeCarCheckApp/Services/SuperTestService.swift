@@ -673,40 +673,66 @@ class SuperTestService {
             return
         }
 
-        for (index, (vpnConfig, target)) in allVPN.enumerated() {
-            if Task.isCancelled { return }
+        let maxConcurrent = 6
+        var index = 0
 
-            let targetLabel: String
-            switch target {
-            case .joe: targetLabel = "Joe"
-            case .ignition: targetLabel = "Ignition"
-            case .ppsr: targetLabel = "PPSR"
+        await withTaskGroup(of: (OpenVPNConfig, ProxyRotationService.ProxyTarget, Bool, Int).self) { group in
+            var launched = 0
+
+            for (vpnConfig, target) in allVPN {
+                if Task.isCancelled { return }
+
+                if launched >= maxConcurrent {
+                    if let result = await group.next() {
+                        processVPNResult(result)
+                        index += 1
+                        phaseProgress[.openvpnProfiles] = (total: total, done: index)
+                    }
+                }
+
+                currentItem = vpnConfig.displayString
+                group.addTask {
+                    let (passed, latency) = await self.proxyService.testOpenVPNEndpointReachability(vpnConfig)
+                    return (vpnConfig, target, passed, latency)
+                }
+                launched += 1
             }
 
-            currentItem = vpnConfig.displayString
-            let (passed, latency) = await testVPNHost(vpnConfig)
-
-            results.append(SuperTestItemResult(
-                name: "\(vpnConfig.displayString) [\(targetLabel)]",
-                category: .openvpnProfiles,
-                passed: passed,
-                latencyMs: passed ? latency : nil,
-                detail: passed ? "Host reachable in \(latency)ms" : "Host unreachable"
-            ))
-
-            proxyService.toggleVPNConfig(vpnConfig, target: target, enabled: passed)
-            if !passed {
-                addLog("Auto-disabled VPN: \(vpnConfig.fileName) [\(targetLabel)]", level: .warning)
-                logger.log("VPN FAIL (auto-disabled): \(vpnConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
-            } else {
-                logger.log("VPN PASS: \(vpnConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
+            for await result in group {
+                processVPNResult(result)
+                index += 1
+                phaseProgress[.openvpnProfiles] = (total: total, done: index)
             }
-
-            phaseProgress[.openvpnProfiles] = (total: total, done: index + 1)
         }
 
         let passedCount = results.filter { $0.category == .openvpnProfiles && $0.passed }.count
         addLog("OpenVPN: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
+    }
+
+    private func processVPNResult(_ result: (OpenVPNConfig, ProxyRotationService.ProxyTarget, Bool, Int)) {
+        let (vpnConfig, target, passed, latency) = result
+        let targetLabel: String
+        switch target {
+        case .joe: targetLabel = "Joe"
+        case .ignition: targetLabel = "Ignition"
+        case .ppsr: targetLabel = "PPSR"
+        }
+
+        results.append(SuperTestItemResult(
+            name: "\(vpnConfig.displayString) [\(targetLabel)]",
+            category: .openvpnProfiles,
+            passed: passed,
+            latencyMs: passed ? latency : nil,
+            detail: passed ? "Endpoint reachable (DNS + TCP multi-port) in \(latency)ms" : "Endpoint unreachable (DNS, TCP, HTTPS all failed)"
+        ))
+
+        proxyService.markVPNConfigReachable(vpnConfig, target: target, reachable: passed, latencyMs: passed ? latency : nil)
+        if !passed {
+            addLog("Auto-disabled VPN: \(vpnConfig.fileName) [\(targetLabel)]", level: .warning)
+            logger.log("VPN FAIL (auto-disabled): \(vpnConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
+        } else {
+            logger.log("VPN PASS: \(vpnConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
+        }
     }
 
     // MARK: - WireGuard Profile Tests
@@ -728,42 +754,66 @@ class SuperTestService {
             return
         }
 
-        for (index, (wgConfig, target)) in allWG.enumerated() {
-            if Task.isCancelled { return }
+        let maxConcurrent = 8
+        var index = 0
 
-            let targetLabel: String
-            switch target {
-            case .joe: targetLabel = "Joe"
-            case .ignition: targetLabel = "Ignition"
-            case .ppsr: targetLabel = "PPSR"
+        await withTaskGroup(of: (WireGuardConfig, ProxyRotationService.ProxyTarget, Bool, Int).self) { group in
+            var launched = 0
+
+            for (wgConfig, target) in allWG {
+                if Task.isCancelled { return }
+
+                if launched >= maxConcurrent {
+                    if let result = await group.next() {
+                        processWGResult(result)
+                        index += 1
+                        phaseProgress[.wireguardProfiles] = (total: total, done: index)
+                    }
+                }
+
+                currentItem = wgConfig.displayString
+                group.addTask {
+                    let (reachable, latency) = await self.proxyService.testWGEndpointWithLatency(wgConfig)
+                    return (wgConfig, target, reachable, latency)
+                }
+                launched += 1
             }
 
-            currentItem = wgConfig.displayString
-            let start = Date()
-            let reachable = await proxyService.testWGEndpointReachability(wgConfig)
-            let latency = Int(Date().timeIntervalSince(start) * 1000)
-
-            results.append(SuperTestItemResult(
-                name: "\(wgConfig.displayString) [\(targetLabel)]",
-                category: .wireguardProfiles,
-                passed: reachable,
-                latencyMs: reachable ? latency : nil,
-                detail: reachable ? "Endpoint reachable (DNS + TCP) in \(latency)ms" : "Endpoint unreachable"
-            ))
-
-            proxyService.markWGConfigReachable(wgConfig, target: target, reachable: reachable)
-            if !reachable {
-                addLog("Auto-disabled WG: \(wgConfig.fileName) [\(targetLabel)]", level: .warning)
-                logger.log("WG FAIL (auto-disabled): \(wgConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
-            } else {
-                logger.log("WG PASS: \(wgConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
+            for await result in group {
+                processWGResult(result)
+                index += 1
+                phaseProgress[.wireguardProfiles] = (total: total, done: index)
             }
-
-            phaseProgress[.wireguardProfiles] = (total: total, done: index + 1)
         }
 
         let passedCount = results.filter { $0.category == .wireguardProfiles && $0.passed }.count
         addLog("WireGuard: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
+    }
+
+    private func processWGResult(_ result: (WireGuardConfig, ProxyRotationService.ProxyTarget, Bool, Int)) {
+        let (wgConfig, target, reachable, latency) = result
+        let targetLabel: String
+        switch target {
+        case .joe: targetLabel = "Joe"
+        case .ignition: targetLabel = "Ignition"
+        case .ppsr: targetLabel = "PPSR"
+        }
+
+        results.append(SuperTestItemResult(
+            name: "\(wgConfig.displayString) [\(targetLabel)]",
+            category: .wireguardProfiles,
+            passed: reachable,
+            latencyMs: reachable ? latency : nil,
+            detail: reachable ? "Endpoint reachable (DNS + TCP + DoH fallback) in \(latency)ms" : "Endpoint unreachable (all strategies failed)"
+        ))
+
+        proxyService.markWGConfigReachable(wgConfig, target: target, reachable: reachable)
+        if !reachable {
+            addLog("Auto-disabled WG: \(wgConfig.fileName) [\(targetLabel)]", level: .warning)
+            logger.log("WG FAIL (auto-disabled): \(wgConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
+        } else {
+            logger.log("WG PASS: \(wgConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
+        }
     }
 
     // MARK: - Utility Methods
@@ -869,52 +919,7 @@ class SuperTestService {
         }
     }
 
-    private func testVPNHost(_ vpnConfig: OpenVPNConfig) async -> (Bool, Int) {
-        let host = vpnConfig.remoteHost
-        let port = vpnConfig.remotePort
 
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 8
-        config.timeoutIntervalForResource = 10
-        let session = URLSession(configuration: config)
-        defer { session.invalidateAndCancel() }
-
-        let start = Date()
-
-        guard let url = URL(string: "https://\(host):\(port)") else {
-            let altURL = URL(string: "https://\(host)")!
-            do {
-                var request = URLRequest(url: altURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
-                request.httpMethod = "HEAD"
-                let (_, response) = try await session.data(for: request)
-                let latency = Int(Date().timeIntervalSince(start) * 1000)
-                if let http = response as? HTTPURLResponse {
-                    return (http.statusCode < 500, latency)
-                }
-                return (true, latency)
-            } catch {
-                return (false, 0)
-            }
-        }
-
-        do {
-            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
-            request.httpMethod = "HEAD"
-            let _ = try await session.data(for: request)
-            let latency = Int(Date().timeIntervalSince(start) * 1000)
-            return (true, latency)
-        } catch let error as NSError {
-            if error.domain == NSURLErrorDomain && error.code == NSURLErrorSecureConnectionFailed {
-                let latency = Int(Date().timeIntervalSince(start) * 1000)
-                return (true, latency)
-            }
-            if error.domain == NSURLErrorDomain && error.code == NSURLErrorCannotConnectToHost {
-                return (false, 0)
-            }
-            let latency = Int(Date().timeIntervalSince(start) * 1000)
-            return (latency < 7000, latency)
-        }
-    }
 
     private func updateProgress(_ value: Double) {
         progress = value

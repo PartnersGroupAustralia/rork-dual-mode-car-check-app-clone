@@ -770,6 +770,106 @@ class ProxyRotationService {
         persistVPNConfigs(for: target)
     }
 
+    func markVPNConfigReachable(_ config: OpenVPNConfig, target: ProxyTarget, reachable: Bool, latencyMs: Int? = nil) {
+        func update(_ configs: inout [OpenVPNConfig]) {
+            if let idx = configs.firstIndex(where: { $0.id == config.id || $0.uniqueKey == config.uniqueKey }) {
+                configs[idx].isReachable = reachable
+                configs[idx].lastTested = Date()
+                configs[idx].lastLatencyMs = latencyMs
+                if reachable {
+                    configs[idx].failCount = 0
+                    configs[idx].isEnabled = true
+                } else {
+                    configs[idx].failCount += 1
+                    if configs[idx].failCount >= 2 { configs[idx].isEnabled = false }
+                }
+            }
+        }
+        switch target {
+        case .joe: update(&joeVPNConfigs)
+        case .ignition: update(&ignitionVPNConfigs)
+        case .ppsr: update(&ppsrVPNConfigs)
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    func testAllVPNConfigs(target: ProxyTarget) async {
+        let configs = vpnConfigs(for: target)
+        guard !configs.isEmpty else { return }
+        let maxConcurrent = 8
+        await withTaskGroup(of: (String, Bool, Int).self) { group in
+            var launched = 0
+            for config in configs {
+                if launched >= maxConcurrent {
+                    if let result = await group.next() {
+                        applyVPNTestResult(result, target: target)
+                    }
+                }
+                group.addTask {
+                    let (reachable, latency) = await self.testOpenVPNEndpointReachability(config)
+                    return (config.uniqueKey, reachable, latency)
+                }
+                launched += 1
+            }
+            for await result in group {
+                applyVPNTestResult(result, target: target)
+            }
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    private func applyVPNTestResult(_ result: (String, Bool, Int), target: ProxyTarget) {
+        let (uniqueKey, reachable, latency) = result
+        func update(_ configs: inout [OpenVPNConfig]) {
+            if let idx = configs.firstIndex(where: { $0.uniqueKey == uniqueKey }) {
+                configs[idx].isReachable = reachable
+                configs[idx].lastTested = Date()
+                configs[idx].lastLatencyMs = reachable ? latency : nil
+                if reachable {
+                    configs[idx].failCount = 0
+                    configs[idx].isEnabled = true
+                } else {
+                    configs[idx].failCount += 1
+                    if configs[idx].failCount >= 2 { configs[idx].isEnabled = false }
+                }
+            }
+        }
+        switch target {
+        case .joe: update(&joeVPNConfigs)
+        case .ignition: update(&ignitionVPNConfigs)
+        case .ppsr: update(&ppsrVPNConfigs)
+        }
+    }
+
+    nonisolated func testOpenVPNEndpointReachability(_ config: OpenVPNConfig) async -> (Bool, Int) {
+        let host = config.remoteHost
+        let port = config.remotePort
+        let start = Date()
+
+        let dnsOk = await resolveHost(host)
+        if !dnsOk {
+            let dohOk = await resolveHostViaDoH(host)
+            if !dohOk { return (false, 0) }
+        }
+
+        if await testTCPConnection(host: host, port: port, timeoutSeconds: 8) {
+            return (true, Int(Date().timeIntervalSince(start) * 1000))
+        }
+
+        let commonPorts = [443, 80, 1194, 1195, 8080]
+        for altPort in commonPorts where altPort != port {
+            if await testTCPConnection(host: host, port: altPort, timeoutSeconds: 5) {
+                return (true, Int(Date().timeIntervalSince(start) * 1000))
+            }
+        }
+
+        if await testHTTPSHandshake(host: host) {
+            return (true, Int(Date().timeIntervalSince(start) * 1000))
+        }
+
+        return (false, 0)
+    }
+
     func clearAllVPNConfigs(target: ProxyTarget) {
         switch target {
         case .joe: joeVPNConfigs.removeAll()
@@ -944,13 +1044,29 @@ class ProxyRotationService {
         let host = config.endpointHost
         let port = config.endpointPort
 
-        let dnsReachable = await resolveHost(host)
-        if !dnsReachable { return false }
+        var dnsReachable = await resolveHost(host)
+        if !dnsReachable {
+            dnsReachable = await resolveHostViaDoH(host)
+            if !dnsReachable { return false }
+        }
 
         if await testTCPConnection(host: host, port: port, timeoutSeconds: 8) { return true }
-        if await testTCPConnection(host: host, port: 443, timeoutSeconds: 5) { return true }
-        if await testTCPConnection(host: host, port: 80, timeoutSeconds: 5) { return true }
+
+        let wgFallbackPorts = [443, 80, 51820, 51821]
+        for altPort in wgFallbackPorts where altPort != port {
+            if await testTCPConnection(host: host, port: altPort, timeoutSeconds: 5) { return true }
+        }
+
+        if await testHTTPSHandshake(host: host) { return true }
+
         return false
+    }
+
+    nonisolated func testWGEndpointWithLatency(_ config: WireGuardConfig) async -> (Bool, Int) {
+        let start = Date()
+        let reachable = await testWGEndpointReachability(config)
+        let latency = Int(Date().timeIntervalSince(start) * 1000)
+        return (reachable, latency)
     }
 
     private nonisolated func resolveHost(_ host: String) async -> Bool {
@@ -964,6 +1080,69 @@ class ProxyRotationService {
             } else {
                 continuation.resume(returning: false)
             }
+        }
+    }
+
+    private nonisolated func resolveHostViaDoH(_ host: String) async -> Bool {
+        let dohEndpoints = [
+            "https://cloudflare-dns.com/dns-query?name=\(host)&type=A",
+            "https://dns.google/dns-query?name=\(host)&type=A",
+            "https://dns.quad9.net:5053/dns-query?name=\(host)&type=A"
+        ]
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        for urlString in dohEndpoints {
+            guard let url = URL(string: urlString) else { continue }
+            var request = URLRequest(url: url)
+            request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = 6
+            do {
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty {
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let answers = json["Answer"] as? [[String: Any]], !answers.isEmpty {
+                        return true
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+        return false
+    }
+
+    private nonisolated func testHTTPSHandshake(host: String) async -> Bool {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6
+        config.timeoutIntervalForResource = 8
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        guard let url = URL(string: "https://\(host)") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 6
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                return http.statusCode < 500
+            }
+            return true
+        } catch let error as NSError {
+            if error.domain == NSURLErrorDomain {
+                if error.code == NSURLErrorSecureConnectionFailed { return true }
+                if error.code == NSURLErrorServerCertificateUntrusted { return true }
+                if error.code == NSURLErrorServerCertificateHasBadDate { return true }
+                if error.code == NSURLErrorServerCertificateHasUnknownRoot { return true }
+            }
+            return false
         }
     }
 

@@ -24,8 +24,11 @@ struct PPSRSettingsView: View {
     @State private var importResult: AppDataExportService.ImportResult?
     @State private var exportedJSON: String = ""
     @State private var showImportFileImporter: Bool = false
+    @State private var nordAccessKeyInput: String = ""
+    @State private var isTestingVPNConfigs: Bool = false
 
     private let proxyService = ProxyRotationService.shared
+    private let nordService = NordVPNService.shared
 
     var body: some View {
         List {
@@ -37,6 +40,7 @@ struct PPSRSettingsView: View {
             emailSection
             screenshotSection
             debugSection
+            nordVPNSection
             endpointSection
             iCloudSection
             configExportImportSection
@@ -247,8 +251,13 @@ struct PPSRSettingsView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(vpn.fileName)
                                     .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
-                                Text(vpn.displayString)
-                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                HStack(spacing: 6) {
+                                    Text(vpn.displayString)
+                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                    Text(vpn.statusLabel)
+                                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                        .foregroundStyle(vpn.isReachable ? .green : (vpn.lastTested != nil ? .red : .gray))
+                                }
                             }
                             Spacer()
                         }
@@ -668,6 +677,129 @@ struct PPSRSettingsView: View {
             Text("Concurrency")
         } footer: {
             Text("Up to 8 concurrent WKWebView sessions.")
+        }
+    }
+
+    private var nordVPNSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "shield.checkered").foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("NordVPN Integration").font(.body)
+                    Text(nordService.hasAccessKey ? "Access key configured" : "No access key")
+                        .font(.caption2)
+                        .foregroundStyle(nordService.hasAccessKey ? .green : .secondary)
+                }
+                Spacer()
+                if nordService.hasPrivateKey {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.caption)
+                }
+            }
+
+            if !nordService.hasAccessKey {
+                HStack {
+                    SecureField("Nord Access Key", text: $nordAccessKeyInput)
+                        .font(.system(.caption, design: .monospaced))
+                        .textContentType(.password)
+                    Button("Save") {
+                        nordService.setAccessKey(nordAccessKeyInput)
+                        nordAccessKeyInput = ""
+                    }
+                    .disabled(nordAccessKeyInput.isEmpty)
+                }
+            } else {
+                if !nordService.hasPrivateKey {
+                    Button {
+                        Task { await nordService.fetchPrivateKey() }
+                    } label: {
+                        HStack {
+                            if nordService.isLoadingKey { ProgressView().controlSize(.small) }
+                            Label("Fetch WireGuard Private Key", systemImage: "key.fill")
+                        }
+                    }
+                    .disabled(nordService.isLoadingKey)
+                }
+
+                Button {
+                    Task { await nordService.fetchRecommendedServers(limit: 10) }
+                } label: {
+                    HStack {
+                        if nordService.isLoadingServers { ProgressView().controlSize(.small) }
+                        Label("Fetch Recommended Servers", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+                .disabled(nordService.isLoadingServers)
+
+                if !nordService.recommendedServers.isEmpty {
+                    ForEach(nordService.recommendedServers, id: \.id) { server in
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(server.hostname)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium))
+                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    if let city = server.city {
+                                        Text(city).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Text("Load: \(server.load)%")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(server.load < 30 ? .green : (server.load < 70 ? .orange : .red))
+                                }
+                            }
+                            Spacer()
+                            if nordService.hasPrivateKey && server.publicKey != nil {
+                                Button {
+                                    if let wgConfig = nordService.generateWireGuardConfig(from: server) {
+                                        proxyService.importWGConfig(wgConfig, for: .ppsr)
+                                        vm.log("Imported WG: \(server.hostname)", level: .success)
+                                    }
+                                } label: {
+                                    Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Button(role: .destructive) {
+                    nordService.setAccessKey("")
+                    nordService.setPrivateKey("")
+                    nordService.recommendedServers.removeAll()
+                } label: {
+                    Label("Remove Access Key", systemImage: "trash")
+                }
+            }
+
+            if let error = nordService.lastError {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+
+            let currentMode = proxyService.connectionMode(for: .ppsr)
+            if currentMode == .openvpn {
+                let vpnList = proxyService.vpnConfigs(for: .ppsr)
+                if !vpnList.isEmpty {
+                    Button {
+                        guard !isTestingVPNConfigs else { return }
+                        isTestingVPNConfigs = true
+                        Task {
+                            await proxyService.testAllVPNConfigs(target: .ppsr)
+                            let reachable = proxyService.vpnConfigs(for: .ppsr).filter(\.isReachable).count
+                            vm.log("OpenVPN test: \(reachable)/\(vpnList.count) reachable", level: .success)
+                            isTestingVPNConfigs = false
+                        }
+                    } label: {
+                        HStack {
+                            Label("Test All OpenVPN", systemImage: "antenna.radiowaves.left.and.right")
+                            if isTestingVPNConfigs { Spacer(); ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(isTestingVPNConfigs)
+                }
+            }
+        } header: {
+            Text("NordVPN")
+        } footer: {
+            Text("Configure NordVPN access key to auto-generate WireGuard and OpenVPN configs from recommended servers.")
         }
     }
 

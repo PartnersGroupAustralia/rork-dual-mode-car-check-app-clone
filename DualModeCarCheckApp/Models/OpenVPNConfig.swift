@@ -9,6 +9,10 @@ nonisolated struct OpenVPNConfig: Identifiable, Codable, Sendable {
     let rawContent: String
     var isEnabled: Bool
     var importedAt: Date
+    var lastTested: Date?
+    var isReachable: Bool
+    var failCount: Int
+    var lastLatencyMs: Int?
 
     init(fileName: String, remoteHost: String, remotePort: Int, proto: String, rawContent: String) {
         self.id = UUID()
@@ -19,6 +23,10 @@ nonisolated struct OpenVPNConfig: Identifiable, Codable, Sendable {
         self.rawContent = rawContent
         self.isEnabled = true
         self.importedAt = Date()
+        self.lastTested = nil
+        self.isReachable = false
+        self.failCount = 0
+        self.lastLatencyMs = nil
     }
 
     var displayString: String {
@@ -26,7 +34,29 @@ nonisolated struct OpenVPNConfig: Identifiable, Codable, Sendable {
     }
 
     var statusLabel: String {
-        isEnabled ? "Enabled" : "Disabled"
+        if !isEnabled { return "Disabled" }
+        if let _ = lastTested {
+            return isReachable ? "Reachable" : "Unreachable"
+        }
+        return "Untested"
+    }
+
+    var uniqueKey: String {
+        "\(remoteHost)|\(remotePort)|\(proto)"
+    }
+
+    var serverName: String {
+        let host = remoteHost
+        if host.contains(".nordvpn.com") {
+            return host.replacingOccurrences(of: ".nordvpn.com", with: "")
+        }
+        if host.contains(".") {
+            let parts = host.components(separatedBy: ".")
+            if parts.count >= 2 {
+                return parts[0]
+            }
+        }
+        return host
     }
 
     static func parse(fileName: String, content: String) -> OpenVPNConfig? {
