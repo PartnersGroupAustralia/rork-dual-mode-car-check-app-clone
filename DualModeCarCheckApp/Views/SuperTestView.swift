@@ -74,7 +74,7 @@ struct SuperTestView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Comprehensive Infrastructure Test")
                         .font(.subheadline.bold())
-                    Text("URLs · DNS · Proxies · VPN · Fingerprint")
+                    Text("URLs · DNS · Proxies · VPN · WireGuard · Fingerprint")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if service.isRunning {
@@ -251,6 +251,7 @@ struct SuperTestView: View {
         case .dnsServers: "DNS"
         case .socks5Proxies: "Proxies"
         case .openvpnProfiles: "VPN"
+        case .wireguardProfiles: "WireGuard"
         default: phase.rawValue
         }
     }
@@ -264,6 +265,7 @@ struct SuperTestView: View {
         case .dnsServers: .blue
         case .socks5Proxies: .red
         case .openvpnProfiles: .indigo
+        case .wireguardProfiles: .purple
         default: .secondary
         }
     }

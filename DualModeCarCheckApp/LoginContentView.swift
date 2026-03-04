@@ -1673,6 +1673,8 @@ struct LoginSettingsContentView: View {
     @State private var isTestingIgnitionTargetProxies: Bool = false
     @State private var showVPNFileImporter: Bool = false
     @State private var vpnImportTarget: ProxyRotationService.ProxyTarget = .joe
+    @State private var showWGFileImporter: Bool = false
+    @State private var wgImportTarget: ProxyRotationService.ProxyTarget = .joe
     @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
 
     private var accentColor: Color {
@@ -1738,6 +1740,36 @@ struct LoginSettingsContentView: View {
                 }
             case .failure(let error):
                 vm.log("VPN import error: \(error.localizedDescription)", level: .error)
+            }
+        }
+        .fileImporter(isPresented: $showWGFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                var parsed: [WireGuardConfig] = []
+                var failedFiles: [String] = []
+                for url in urls {
+                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let data = try? Data(contentsOf: url),
+                       let content = String(data: data, encoding: .utf8) {
+                        let fileName = url.lastPathComponent
+                        if let config = WireGuardConfig.parse(fileName: fileName, content: content) {
+                            parsed.append(config)
+                        } else {
+                            failedFiles.append(fileName)
+                            vm.log("Failed to parse WG: \(fileName)", level: .warning)
+                        }
+                    }
+                }
+                if !parsed.isEmpty {
+                    let report = vm.proxyService.bulkImportWGConfigs(parsed, for: wgImportTarget)
+                    vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates", level: .success)
+                }
+                for name in failedFiles {
+                    vm.log("Failed to parse WireGuard: \(name)", level: .warning)
+                }
+            case .failure(let error):
+                vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
             }
         }
     }
@@ -2028,6 +2060,65 @@ struct LoginSettingsContentView: View {
                         Label("Clear All Configs", systemImage: "trash")
                     }
                 }
+            } else if currentMode == .wireguard {
+                let wgList = vm.proxyService.wgConfigs(for: target)
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.trianglebadge.exclamationmark.fill").foregroundStyle(.purple)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(title) WireGuard").font(.body)
+                        Text("\(wgList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let enabledCount = wgList.filter(\.isEnabled).count
+                    if enabledCount > 0 {
+                        Text("\(enabledCount) active")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.purple)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.purple.opacity(0.12)).clipShape(Capsule())
+                    }
+                }
+
+                Button {
+                    wgImportTarget = target
+                    showWGFileImporter = true
+                } label: {
+                    Label("Import .conf Files", systemImage: "doc.badge.plus")
+                }
+
+                if !wgList.isEmpty {
+                    ForEach(wgList) { wg in
+                        HStack(spacing: 8) {
+                            Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(wg.isEnabled ? .purple : .secondary)
+                                .onTapGesture {
+                                    vm.proxyService.toggleWGConfig(wg, target: target, enabled: !wg.isEnabled)
+                                }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(wg.fileName)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium))
+                                    .lineLimit(1)
+                                Text(wg.displayString)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                vm.proxyService.removeWGConfig(wg, target: target)
+                                vm.log("Removed WireGuard: \(wg.fileName)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+
+                    Button(role: .destructive) {
+                        vm.proxyService.clearAllWGConfigs(target: target)
+                        vm.log("Cleared all \(title) WireGuard configs")
+                    } label: {
+                        Label("Clear All Configs", systemImage: "trash")
+                    }
+                }
             } else {
                 let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
                 let total = PPSRDoHService.shared.managedProviders.count
@@ -2056,15 +2147,16 @@ struct LoginSettingsContentView: View {
                 Spacer()
                 Text(currentMode.label)
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(currentMode == .proxy ? color : currentMode == .openvpn ? .indigo : .cyan)
+                    .foregroundStyle(connectionModeColor(currentMode, tint: color))
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background((currentMode == .proxy ? color : currentMode == .openvpn ? .indigo : .cyan).opacity(0.12))
+                    .background(connectionModeColor(currentMode, tint: color).opacity(0.12))
                     .clipShape(Capsule())
             }
         } footer: {
             switch currentMode {
             case .proxy: Text("\(title) uses SOCKS5 proxies for all connections.")
             case .openvpn: Text("\(title) uses OpenVPN configs. Import .ovpn files to connect.")
+            case .wireguard: Text("\(title) uses WireGuard configs. Import NordVPN .conf files to connect.")
             case .dns: Text("\(title) uses DoH DNS rotation for connections.")
             }
         }
@@ -2122,6 +2214,15 @@ struct LoginSettingsContentView: View {
     private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
         if proxy.lastTested == nil { return .gray }
         return proxy.isWorking ? .green : .red
+    }
+
+    private func connectionModeColor(_ mode: ConnectionMode, tint: Color) -> Color {
+        switch mode {
+        case .proxy: tint
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        }
     }
 
     private var stealthSection: some View {

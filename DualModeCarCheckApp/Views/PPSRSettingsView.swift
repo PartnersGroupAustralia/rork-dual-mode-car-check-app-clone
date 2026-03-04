@@ -17,6 +17,7 @@ struct PPSRSettingsView: View {
     @State private var ppsrProxyImportReport: ProxyRotationService.ImportReport?
     @State private var isTestingPPSRProxies: Bool = false
     @State private var showPPSRVPNFileImporter: Bool = false
+    @State private var showPPSRWGFileImporter: Bool = false
     @State private var showExportSheet: Bool = false
     @State private var showImportSheet: Bool = false
     @State private var importConfigText: String = ""
@@ -74,6 +75,31 @@ struct PPSRSettingsView: View {
                 }
             case .failure(let error):
                 vm.log("VPN import error: \(error.localizedDescription)", level: .error)
+            }
+        }
+        .fileImporter(isPresented: $showPPSRWGFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                var parsed: [WireGuardConfig] = []
+                for url in urls {
+                    guard url.startAccessingSecurityScopedResource() else { continue }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let data = try? Data(contentsOf: url),
+                       let content = String(data: data, encoding: .utf8) {
+                        let fileName = url.lastPathComponent
+                        if let config = WireGuardConfig.parse(fileName: fileName, content: content) {
+                            parsed.append(config)
+                        } else {
+                            vm.log("Failed to parse WG: \(fileName)", level: .warning)
+                        }
+                    }
+                }
+                if !parsed.isEmpty {
+                    let report = proxyService.bulkImportWGConfigs(parsed, for: .ppsr)
+                    vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates", level: .success)
+                }
+            case .failure(let error):
+                vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
             }
         }
     }
@@ -227,6 +253,60 @@ struct PPSRSettingsView: View {
                         Label("Clear All Configs", systemImage: "trash")
                     }
                 }
+            } else if currentMode == .wireguard {
+                let wgList = proxyService.wgConfigs(for: .ppsr)
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.trianglebadge.exclamationmark.fill").foregroundStyle(.purple)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("PPSR WireGuard").font(.body)
+                        Text("\(wgList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let enabledCount = wgList.filter(\.isEnabled).count
+                    if enabledCount > 0 {
+                        Text("\(enabledCount) active")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.purple)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.purple.opacity(0.12)).clipShape(Capsule())
+                    }
+                }
+
+                Button { showPPSRWGFileImporter = true } label: {
+                    Label("Import .conf Files", systemImage: "doc.badge.plus")
+                }
+
+                if !wgList.isEmpty {
+                    ForEach(wgList) { wg in
+                        HStack(spacing: 8) {
+                            Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(wg.isEnabled ? .purple : .secondary)
+                                .onTapGesture {
+                                    proxyService.toggleWGConfig(wg, target: .ppsr, enabled: !wg.isEnabled)
+                                }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(wg.fileName)
+                                    .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                                Text(wg.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                proxyService.removeWGConfig(wg, target: .ppsr)
+                                vm.log("Removed WireGuard: \(wg.fileName)")
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+
+                    Button(role: .destructive) {
+                        proxyService.clearAllWGConfigs(target: .ppsr)
+                        vm.log("Cleared all PPSR WireGuard configs")
+                    } label: {
+                        Label("Clear All Configs", systemImage: "trash")
+                    }
+                }
             } else {
                 let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
                 let total = PPSRDoHService.shared.managedProviders.count
@@ -255,15 +335,16 @@ struct PPSRSettingsView: View {
                 Spacer()
                 Text(currentMode.label)
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(currentMode == .proxy ? .blue : currentMode == .openvpn ? .indigo : .cyan)
+                    .foregroundStyle(ppsrConnectionModeColor(currentMode))
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background((currentMode == .proxy ? Color.blue : currentMode == .openvpn ? .indigo : .cyan).opacity(0.12))
+                    .background(ppsrConnectionModeColor(currentMode).opacity(0.12))
                     .clipShape(Capsule())
             }
         } footer: {
             switch currentMode {
             case .proxy: Text("PPSR uses SOCKS5 proxies for all connections.")
             case .openvpn: Text("PPSR uses OpenVPN configs. Import .ovpn files to connect.")
+            case .wireguard: Text("PPSR uses WireGuard configs. Import NordVPN .conf files to connect.")
             case .dns: Text("PPSR uses DoH DNS rotation for connections.")
             }
         }
@@ -321,6 +402,15 @@ struct PPSRSettingsView: View {
     private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
         if proxy.lastTested == nil { return .gray }
         return proxy.isWorking ? .green : .red
+    }
+
+    private func ppsrConnectionModeColor(_ mode: ConnectionMode) -> Color {
+        switch mode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        }
     }
 
     private var stealthSection: some View {

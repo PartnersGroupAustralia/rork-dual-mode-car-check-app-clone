@@ -11,6 +11,7 @@ nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
     case dnsServers = "DNS Servers"
     case socks5Proxies = "SOCKS5 Proxies"
     case openvpnProfiles = "OpenVPN Profiles"
+    case wireguardProfiles = "WireGuard Profiles"
     case complete = "Complete"
 
     var id: String { rawValue }
@@ -25,6 +26,7 @@ nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
         case .dnsServers: "lock.shield.fill"
         case .socks5Proxies: "network"
         case .openvpnProfiles: "shield.lefthalf.filled"
+        case .wireguardProfiles: "lock.trianglebadge.exclamationmark.fill"
         case .complete: "checkmark.seal.fill"
         }
     }
@@ -39,6 +41,7 @@ nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
         case .dnsServers: "blue"
         case .socks5Proxies: "red"
         case .openvpnProfiles: "indigo"
+        case .wireguardProfiles: "purple"
         case .complete: "green"
         }
     }
@@ -116,7 +119,7 @@ class SuperTestService {
     private let diagnostics = PPSRConnectionDiagnosticService.shared
 
     var phaseSummary: [(phase: SuperTestPhase, passed: Int, failed: Int)] {
-        let phases: [SuperTestPhase] = [.fingerprint, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles]
+        let phases: [SuperTestPhase] = [.fingerprint, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles, .wireguardProfiles]
         return phases.map { phase in
             let phaseResults = results.filter { $0.category == phase }
             let passed = phaseResults.filter(\.passed).count
@@ -161,6 +164,9 @@ class SuperTestService {
             if Task.isCancelled { finalize(startTime: startTime); return }
 
             await runOpenVPNProfileTests()
+            if Task.isCancelled { finalize(startTime: startTime); return }
+
+            await runWireGuardProfileTests()
 
             finalize(startTime: startTime)
         }
@@ -616,6 +622,97 @@ class SuperTestService {
         let passedCount = results.filter { $0.category == .openvpnProfiles && $0.passed }.count
         addLog("OpenVPN: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
         updateProgress(0.95)
+    }
+
+    // MARK: - WireGuard Profile Tests
+
+    private func runWireGuardProfileTests() async {
+        logger.log("Phase 8: Testing WireGuard Profiles", category: .superTest, level: .info, sessionId: "supertest")
+        currentPhase = .wireguardProfiles
+        let allWG: [(config: WireGuardConfig, target: ProxyRotationService.ProxyTarget)] =
+            proxyService.joeWGConfigs.map { ($0, .joe) } +
+            proxyService.ignitionWGConfigs.map { ($0, .ignition) } +
+            proxyService.ppsrWGConfigs.map { ($0, .ppsr) }
+
+        let total = allWG.count
+        phaseProgress[.wireguardProfiles] = (total: total, done: 0)
+        addLog("Phase 8: Testing \(total) WireGuard Profiles")
+
+        if total == 0 {
+            addLog("No WireGuard profiles configured — skipping", level: .warning)
+            updateProgress(0.98)
+            return
+        }
+
+        for (index, (wgConfig, target)) in allWG.enumerated() {
+            if Task.isCancelled { return }
+
+            let targetLabel: String
+            switch target {
+            case .joe: targetLabel = "Joe"
+            case .ignition: targetLabel = "Ignition"
+            case .ppsr: targetLabel = "PPSR"
+            }
+
+            currentItem = wgConfig.displayString
+            let (passed, latency) = await testWGHost(wgConfig)
+
+            results.append(SuperTestItemResult(
+                name: "\(wgConfig.displayString) [\(targetLabel)]",
+                category: .wireguardProfiles,
+                passed: passed,
+                latencyMs: passed ? latency : nil,
+                detail: passed ? "Host reachable in \(latency)ms" : "Host unreachable"
+            ))
+
+            proxyService.toggleWGConfig(wgConfig, target: target, enabled: passed)
+            if !passed {
+                addLog("Auto-disabled WG: \(wgConfig.fileName) [\(targetLabel)]", level: .warning)
+                logger.log("WG FAIL (auto-disabled): \(wgConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
+            } else {
+                logger.log("WG PASS: \(wgConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
+            }
+
+            phaseProgress[.wireguardProfiles] = (total: total, done: index + 1)
+        }
+
+        let passedCount = results.filter { $0.category == .wireguardProfiles && $0.passed }.count
+        addLog("WireGuard: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
+        updateProgress(0.98)
+    }
+
+    private func testWGHost(_ wgConfig: WireGuardConfig) async -> (Bool, Int) {
+        let host = wgConfig.endpointHost
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        let start = Date()
+
+        guard let url = URL(string: "https://\(host)") else {
+            return (false, 0)
+        }
+
+        do {
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
+            request.httpMethod = "HEAD"
+            let _ = try await session.data(for: request)
+            let latency = Int(Date().timeIntervalSince(start) * 1000)
+            return (true, latency)
+        } catch let error as NSError {
+            if error.domain == NSURLErrorDomain && error.code == NSURLErrorSecureConnectionFailed {
+                let latency = Int(Date().timeIntervalSince(start) * 1000)
+                return (true, latency)
+            }
+            if error.domain == NSURLErrorDomain && error.code == NSURLErrorCannotConnectToHost {
+                return (false, 0)
+            }
+            let latency = Int(Date().timeIntervalSince(start) * 1000)
+            return (latency < 7000, latency)
+        }
     }
 
     // MARK: - Utility Methods

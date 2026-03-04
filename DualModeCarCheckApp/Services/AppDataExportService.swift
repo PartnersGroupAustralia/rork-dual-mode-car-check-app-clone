@@ -12,6 +12,9 @@ nonisolated struct ExportableConfig: Codable, Sendable {
     var joeVPNConfigs: [ExportVPN] = []
     var ignitionVPNConfigs: [ExportVPN] = []
     var ppsrVPNConfigs: [ExportVPN] = []
+    var joeWGConfigs: [ExportWG] = []
+    var ignitionWGConfigs: [ExportWG] = []
+    var ppsrWGConfigs: [ExportWG] = []
     var dnsServers: [ExportDNS] = []
     var blacklist: [ExportBlacklist] = []
     var connectionModes: ExportConnectionModes = ExportConnectionModes()
@@ -34,6 +37,12 @@ nonisolated struct ExportableConfig: Codable, Sendable {
         let remoteHost: String
         let remotePort: Int
         let proto: String
+        let rawContent: String
+        let enabled: Bool
+    }
+
+    nonisolated struct ExportWG: Codable, Sendable {
+        let fileName: String
         let rawContent: String
         let enabled: Bool
     }
@@ -86,6 +95,10 @@ class AppDataExportService {
         config.ignitionVPNConfigs = proxyService.ignitionVPNConfigs.map { .init(fileName: $0.fileName, remoteHost: $0.remoteHost, remotePort: $0.remotePort, proto: $0.proto, rawContent: $0.rawContent, enabled: $0.isEnabled) }
         config.ppsrVPNConfigs = proxyService.ppsrVPNConfigs.map { .init(fileName: $0.fileName, remoteHost: $0.remoteHost, remotePort: $0.remotePort, proto: $0.proto, rawContent: $0.rawContent, enabled: $0.isEnabled) }
 
+        config.joeWGConfigs = proxyService.joeWGConfigs.map { .init(fileName: $0.fileName, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+        config.ignitionWGConfigs = proxyService.ignitionWGConfigs.map { .init(fileName: $0.fileName, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+        config.ppsrWGConfigs = proxyService.ppsrWGConfigs.map { .init(fileName: $0.fileName, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+
         config.dnsServers = dnsService.managedProviders.map { .init(name: $0.name, url: $0.url, enabled: $0.isEnabled) }
         config.blacklist = blacklistService.blacklistedEmails.map { .init(email: $0.email, reason: $0.reason) }
 
@@ -112,6 +125,7 @@ class AppDataExportService {
         var urlsImported: Int = 0
         var proxiesImported: Int = 0
         var vpnImported: Int = 0
+        var wgImported: Int = 0
         var dnsImported: Int = 0
         var blacklistImported: Int = 0
         var errors: [String] = []
@@ -121,6 +135,7 @@ class AppDataExportService {
             if urlsImported > 0 { parts.append("\(urlsImported) URLs") }
             if proxiesImported > 0 { parts.append("\(proxiesImported) proxies") }
             if vpnImported > 0 { parts.append("\(vpnImported) VPN configs") }
+            if wgImported > 0 { parts.append("\(wgImported) WireGuard configs") }
             if dnsImported > 0 { parts.append("\(dnsImported) DNS servers") }
             if blacklistImported > 0 { parts.append("\(blacklistImported) blacklist entries") }
             if parts.isEmpty { return "Nothing imported" }
@@ -205,6 +220,28 @@ class AppDataExportService {
                 proxyService.importVPNConfig(vpn, for: .ppsr)
                 if !ev.enabled { proxyService.toggleVPNConfig(vpn, target: .ppsr, enabled: false) }
                 result.vpnImported += 1
+            }
+        }
+
+        for ew in config.joeWGConfigs {
+            if let wg = WireGuardConfig.parse(fileName: ew.fileName, content: ew.rawContent) {
+                proxyService.importWGConfig(wg, for: .joe)
+                if !ew.enabled { proxyService.toggleWGConfig(wg, target: .joe, enabled: false) }
+                result.wgImported += 1
+            }
+        }
+        for ew in config.ignitionWGConfigs {
+            if let wg = WireGuardConfig.parse(fileName: ew.fileName, content: ew.rawContent) {
+                proxyService.importWGConfig(wg, for: .ignition)
+                if !ew.enabled { proxyService.toggleWGConfig(wg, target: .ignition, enabled: false) }
+                result.wgImported += 1
+            }
+        }
+        for ew in config.ppsrWGConfigs {
+            if let wg = WireGuardConfig.parse(fileName: ew.fileName, content: ew.rawContent) {
+                proxyService.importWGConfig(wg, for: .ppsr)
+                if !ew.enabled { proxyService.toggleWGConfig(wg, target: .ppsr, enabled: false) }
+                result.wgImported += 1
             }
         }
 
@@ -346,6 +383,27 @@ class AppDataExportService {
         for vpn in proxyService.ppsrVPNConfigs {
             let status = vpn.isEnabled ? "ENABLED" : "DISABLED"
             lines.append("  [\(status)] \(vpn.fileName) - \(vpn.displayString)")
+        }
+
+        lines.append("")
+        lines.append("--- WIREGUARD CONFIGS ---")
+
+        lines.append("Joe Fortune (\(proxyService.joeWGConfigs.count)):")
+        for wg in proxyService.joeWGConfigs {
+            let status = wg.isEnabled ? "ENABLED" : "DISABLED"
+            lines.append("  [\(status)] \(wg.fileName) - \(wg.displayString)")
+        }
+
+        lines.append("Ignition (\(proxyService.ignitionWGConfigs.count)):")
+        for wg in proxyService.ignitionWGConfigs {
+            let status = wg.isEnabled ? "ENABLED" : "DISABLED"
+            lines.append("  [\(status)] \(wg.fileName) - \(wg.displayString)")
+        }
+
+        lines.append("PPSR (\(proxyService.ppsrWGConfigs.count)):")
+        for wg in proxyService.ppsrWGConfigs {
+            let status = wg.isEnabled ? "ENABLED" : "DISABLED"
+            lines.append("  [\(status)] \(wg.fileName) - \(wg.displayString)")
         }
 
         return lines.joined(separator: "\n")

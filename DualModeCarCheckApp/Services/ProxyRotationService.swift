@@ -5,12 +5,14 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
     case dns = "DNS"
     case proxy = "Proxy"
     case openvpn = "OpenVPN"
+    case wireguard = "WireGuard"
 
     var icon: String {
         switch self {
         case .dns: "lock.shield.fill"
         case .proxy: "network"
         case .openvpn: "shield.lefthalf.filled"
+        case .wireguard: "lock.trianglebadge.exclamationmark.fill"
         }
     }
 
@@ -19,6 +21,7 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
         case .dns: "DNS-over-HTTPS"
         case .proxy: "SOCKS5 Proxy"
         case .openvpn: "OpenVPN"
+        case .wireguard: "WireGuard"
         }
     }
 }
@@ -41,6 +44,10 @@ class ProxyRotationService {
     var joeVPNConfigs: [OpenVPNConfig] = []
     var ignitionVPNConfigs: [OpenVPNConfig] = []
     var ppsrVPNConfigs: [OpenVPNConfig] = []
+
+    var joeWGConfigs: [WireGuardConfig] = []
+    var ignitionWGConfigs: [WireGuardConfig] = []
+    var ppsrWGConfigs: [WireGuardConfig] = []
     var currentProxyIndex: Int = 0
     var currentIgnitionProxyIndex: Int = 0
     var currentPPSRProxyIndex: Int = 0
@@ -67,12 +74,17 @@ class ProxyRotationService {
     private let ignitionVPNPersistKey = "openvpn_configs_ignition_v1"
     private let ppsrVPNPersistKey = "openvpn_configs_ppsr_v1"
 
+    private let joeWGPersistKey = "wireguard_configs_joe_v1"
+    private let ignitionWGPersistKey = "wireguard_configs_ignition_v1"
+    private let ppsrWGPersistKey = "wireguard_configs_ppsr_v1"
+
     init() {
         loadProxies()
         loadIgnitionProxies()
         loadPPSRProxies()
         loadConnectionModes()
         loadVPNConfigs()
+        loadWGConfigs()
     }
 
     func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {
@@ -792,6 +804,111 @@ class ProxyRotationService {
         if let data = UserDefaults.standard.data(forKey: ppsrVPNPersistKey),
            let configs = try? JSONDecoder().decode([OpenVPNConfig].self, from: data) {
             ppsrVPNConfigs = configs
+        }
+    }
+
+    func wgConfigs(for target: ProxyTarget) -> [WireGuardConfig] {
+        switch target {
+        case .joe: joeWGConfigs
+        case .ignition: ignitionWGConfigs
+        case .ppsr: ppsrWGConfigs
+        }
+    }
+
+    func importWGConfig(_ config: WireGuardConfig, for target: ProxyTarget) {
+        switch target {
+        case .joe:
+            guard !joeWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
+            joeWGConfigs.append(config)
+        case .ignition:
+            guard !ignitionWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
+            ignitionWGConfigs.append(config)
+        case .ppsr:
+            guard !ppsrWGConfigs.contains(where: { $0.peerEndpoint == config.peerEndpoint }) else { return }
+            ppsrWGConfigs.append(config)
+        }
+        persistWGConfigs(for: target)
+    }
+
+    func bulkImportWGConfigs(_ configs: [WireGuardConfig], for target: ProxyTarget) -> ImportReport {
+        var added = 0
+        var duplicates = 0
+        let failed: [String] = []
+        let existing = wgConfigs(for: target)
+        for config in configs {
+            let isDuplicate = existing.contains(where: { $0.peerEndpoint == config.peerEndpoint })
+            if isDuplicate {
+                duplicates += 1
+            } else {
+                switch target {
+                case .joe: joeWGConfigs.append(config)
+                case .ignition: ignitionWGConfigs.append(config)
+                case .ppsr: ppsrWGConfigs.append(config)
+                }
+                added += 1
+            }
+        }
+        if added > 0 { persistWGConfigs(for: target) }
+        let report = ImportReport(added: added, duplicates: duplicates, failed: failed)
+        lastImportReport = report
+        return report
+    }
+
+    func removeWGConfig(_ config: WireGuardConfig, target: ProxyTarget) {
+        switch target {
+        case .joe: joeWGConfigs.removeAll { $0.id == config.id }
+        case .ignition: ignitionWGConfigs.removeAll { $0.id == config.id }
+        case .ppsr: ppsrWGConfigs.removeAll { $0.id == config.id }
+        }
+        persistWGConfigs(for: target)
+    }
+
+    func toggleWGConfig(_ config: WireGuardConfig, target: ProxyTarget, enabled: Bool) {
+        switch target {
+        case .joe:
+            if let idx = joeWGConfigs.firstIndex(where: { $0.id == config.id }) { joeWGConfigs[idx].isEnabled = enabled }
+        case .ignition:
+            if let idx = ignitionWGConfigs.firstIndex(where: { $0.id == config.id }) { ignitionWGConfigs[idx].isEnabled = enabled }
+        case .ppsr:
+            if let idx = ppsrWGConfigs.firstIndex(where: { $0.id == config.id }) { ppsrWGConfigs[idx].isEnabled = enabled }
+        }
+        persistWGConfigs(for: target)
+    }
+
+    func clearAllWGConfigs(target: ProxyTarget) {
+        switch target {
+        case .joe: joeWGConfigs.removeAll()
+        case .ignition: ignitionWGConfigs.removeAll()
+        case .ppsr: ppsrWGConfigs.removeAll()
+        }
+        persistWGConfigs(for: target)
+    }
+
+    private func persistWGConfigs(for target: ProxyTarget) {
+        let key: String
+        let configs: [WireGuardConfig]
+        switch target {
+        case .joe: key = joeWGPersistKey; configs = joeWGConfigs
+        case .ignition: key = ignitionWGPersistKey; configs = ignitionWGConfigs
+        case .ppsr: key = ppsrWGPersistKey; configs = ppsrWGConfigs
+        }
+        if let data = try? JSONEncoder().encode(configs) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func loadWGConfigs() {
+        if let data = UserDefaults.standard.data(forKey: joeWGPersistKey),
+           let configs = try? JSONDecoder().decode([WireGuardConfig].self, from: data) {
+            joeWGConfigs = configs
+        }
+        if let data = UserDefaults.standard.data(forKey: ignitionWGPersistKey),
+           let configs = try? JSONDecoder().decode([WireGuardConfig].self, from: data) {
+            ignitionWGConfigs = configs
+        }
+        if let data = UserDefaults.standard.data(forKey: ppsrWGPersistKey),
+           let configs = try? JSONDecoder().decode([WireGuardConfig].self, from: data) {
+            ppsrWGConfigs = configs
         }
     }
 
