@@ -1,9 +1,255 @@
 import Foundation
 import UniformTypeIdentifiers
 
+nonisolated struct ExportableConfig: Codable, Sendable {
+    var version: String = "1.0"
+    var exportedAt: String = ""
+    var joeURLs: [ExportURL] = []
+    var ignitionURLs: [ExportURL] = []
+    var joeProxies: [ExportProxy] = []
+    var ignitionProxies: [ExportProxy] = []
+    var ppsrProxies: [ExportProxy] = []
+    var joeVPNConfigs: [ExportVPN] = []
+    var ignitionVPNConfigs: [ExportVPN] = []
+    var ppsrVPNConfigs: [ExportVPN] = []
+    var dnsServers: [ExportDNS] = []
+    var blacklist: [ExportBlacklist] = []
+    var connectionModes: ExportConnectionModes = ExportConnectionModes()
+    var settings: ExportSettings = ExportSettings()
+
+    nonisolated struct ExportURL: Codable, Sendable {
+        let url: String
+        let enabled: Bool
+    }
+
+    nonisolated struct ExportProxy: Codable, Sendable {
+        let host: String
+        let port: Int
+        let username: String?
+        let password: String?
+    }
+
+    nonisolated struct ExportVPN: Codable, Sendable {
+        let fileName: String
+        let remoteHost: String
+        let remotePort: Int
+        let proto: String
+        let rawContent: String
+        let enabled: Bool
+    }
+
+    nonisolated struct ExportDNS: Codable, Sendable {
+        let name: String
+        let url: String
+        let enabled: Bool
+    }
+
+    nonisolated struct ExportBlacklist: Codable, Sendable {
+        let email: String
+        let reason: String
+    }
+
+    nonisolated struct ExportConnectionModes: Codable, Sendable {
+        var joe: String = "DNS"
+        var ignition: String = "DNS"
+        var ppsr: String = "DNS"
+    }
+
+    nonisolated struct ExportSettings: Codable, Sendable {
+        var autoExcludeBlacklist: Bool = true
+        var autoBlacklistNoAcc: Bool = false
+    }
+}
+
 @MainActor
 class AppDataExportService {
     static let shared = AppDataExportService()
+
+    func exportJSON() -> String {
+        let urlService = LoginURLRotationService.shared
+        let proxyService = ProxyRotationService.shared
+        let dnsService = PPSRDoHService.shared
+        let blacklistService = BlacklistService.shared
+
+        var config = ExportableConfig()
+
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        config.exportedAt = f.string(from: Date())
+
+        config.joeURLs = urlService.joeURLs.map { .init(url: $0.urlString, enabled: $0.isEnabled) }
+        config.ignitionURLs = urlService.ignitionURLs.map { .init(url: $0.urlString, enabled: $0.isEnabled) }
+
+        config.joeProxies = proxyService.savedProxies.map { .init(host: $0.host, port: $0.port, username: $0.username, password: $0.password) }
+        config.ignitionProxies = proxyService.ignitionProxies.map { .init(host: $0.host, port: $0.port, username: $0.username, password: $0.password) }
+        config.ppsrProxies = proxyService.ppsrProxies.map { .init(host: $0.host, port: $0.port, username: $0.username, password: $0.password) }
+
+        config.joeVPNConfigs = proxyService.joeVPNConfigs.map { .init(fileName: $0.fileName, remoteHost: $0.remoteHost, remotePort: $0.remotePort, proto: $0.proto, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+        config.ignitionVPNConfigs = proxyService.ignitionVPNConfigs.map { .init(fileName: $0.fileName, remoteHost: $0.remoteHost, remotePort: $0.remotePort, proto: $0.proto, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+        config.ppsrVPNConfigs = proxyService.ppsrVPNConfigs.map { .init(fileName: $0.fileName, remoteHost: $0.remoteHost, remotePort: $0.remotePort, proto: $0.proto, rawContent: $0.rawContent, enabled: $0.isEnabled) }
+
+        config.dnsServers = dnsService.managedProviders.map { .init(name: $0.name, url: $0.url, enabled: $0.isEnabled) }
+        config.blacklist = blacklistService.blacklistedEmails.map { .init(email: $0.email, reason: $0.reason) }
+
+        config.connectionModes = .init(
+            joe: proxyService.joeConnectionMode.rawValue,
+            ignition: proxyService.ignitionConnectionMode.rawValue,
+            ppsr: proxyService.ppsrConnectionMode.rawValue
+        )
+
+        config.settings = .init(
+            autoExcludeBlacklist: blacklistService.autoExcludeBlacklist,
+            autoBlacklistNoAcc: blacklistService.autoBlacklistNoAcc
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(config), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{}"
+    }
+
+    struct ImportResult {
+        var urlsImported: Int = 0
+        var proxiesImported: Int = 0
+        var vpnImported: Int = 0
+        var dnsImported: Int = 0
+        var blacklistImported: Int = 0
+        var errors: [String] = []
+
+        var summary: String {
+            var parts: [String] = []
+            if urlsImported > 0 { parts.append("\(urlsImported) URLs") }
+            if proxiesImported > 0 { parts.append("\(proxiesImported) proxies") }
+            if vpnImported > 0 { parts.append("\(vpnImported) VPN configs") }
+            if dnsImported > 0 { parts.append("\(dnsImported) DNS servers") }
+            if blacklistImported > 0 { parts.append("\(blacklistImported) blacklist entries") }
+            if parts.isEmpty { return "Nothing imported" }
+            return "Imported: " + parts.joined(separator: ", ")
+        }
+    }
+
+    func importJSON(_ jsonString: String) -> ImportResult {
+        var result = ImportResult()
+
+        guard let data = jsonString.data(using: .utf8) else {
+            result.errors.append("Invalid text data")
+            return result
+        }
+
+        let config: ExportableConfig
+        do {
+            config = try JSONDecoder().decode(ExportableConfig.self, from: data)
+        } catch {
+            result.errors.append("JSON parse error: \(error.localizedDescription)")
+            return result
+        }
+
+        let urlService = LoginURLRotationService.shared
+        let proxyService = ProxyRotationService.shared
+        let dnsService = PPSRDoHService.shared
+        let blacklistService = BlacklistService.shared
+
+        for exportURL in config.joeURLs {
+            if urlService.addURL(exportURL.url, forIgnition: false) {
+                result.urlsImported += 1
+                if !exportURL.enabled {
+                    if let found = urlService.joeURLs.first(where: { $0.urlString == exportURL.url }) {
+                        urlService.toggleURL(id: found.id, enabled: false)
+                    }
+                }
+            }
+        }
+        for exportURL in config.ignitionURLs {
+            if urlService.addURL(exportURL.url, forIgnition: true) {
+                result.urlsImported += 1
+                if !exportURL.enabled {
+                    if let found = urlService.ignitionURLs.first(where: { $0.urlString == exportURL.url }) {
+                        urlService.toggleURL(id: found.id, enabled: false)
+                    }
+                }
+            }
+        }
+
+        for ep in config.joeProxies {
+            let line = formatProxyLine(ep)
+            let report = proxyService.bulkImportSOCKS5(line, for: .joe)
+            result.proxiesImported += report.added
+        }
+        for ep in config.ignitionProxies {
+            let line = formatProxyLine(ep)
+            let report = proxyService.bulkImportSOCKS5(line, for: .ignition)
+            result.proxiesImported += report.added
+        }
+        for ep in config.ppsrProxies {
+            let line = formatProxyLine(ep)
+            let report = proxyService.bulkImportSOCKS5(line, for: .ppsr)
+            result.proxiesImported += report.added
+        }
+
+        for ev in config.joeVPNConfigs {
+            if let vpn = OpenVPNConfig.parse(fileName: ev.fileName, content: ev.rawContent) {
+                proxyService.importVPNConfig(vpn, for: .joe)
+                if !ev.enabled { proxyService.toggleVPNConfig(vpn, target: .joe, enabled: false) }
+                result.vpnImported += 1
+            }
+        }
+        for ev in config.ignitionVPNConfigs {
+            if let vpn = OpenVPNConfig.parse(fileName: ev.fileName, content: ev.rawContent) {
+                proxyService.importVPNConfig(vpn, for: .ignition)
+                if !ev.enabled { proxyService.toggleVPNConfig(vpn, target: .ignition, enabled: false) }
+                result.vpnImported += 1
+            }
+        }
+        for ev in config.ppsrVPNConfigs {
+            if let vpn = OpenVPNConfig.parse(fileName: ev.fileName, content: ev.rawContent) {
+                proxyService.importVPNConfig(vpn, for: .ppsr)
+                if !ev.enabled { proxyService.toggleVPNConfig(vpn, target: .ppsr, enabled: false) }
+                result.vpnImported += 1
+            }
+        }
+
+        for ed in config.dnsServers {
+            if dnsService.addProvider(name: ed.name, url: ed.url) {
+                if !ed.enabled {
+                    if let found = dnsService.managedProviders.first(where: { $0.url == ed.url }) {
+                        dnsService.toggleProvider(id: found.id, enabled: false)
+                    }
+                }
+                result.dnsImported += 1
+            }
+        }
+
+        for eb in config.blacklist {
+            if !blacklistService.isBlacklisted(eb.email) {
+                blacklistService.addToBlacklist(eb.email, reason: eb.reason)
+                result.blacklistImported += 1
+            }
+        }
+
+        if let joeMode = ConnectionMode(rawValue: config.connectionModes.joe) {
+            proxyService.setConnectionMode(joeMode, for: .joe)
+        }
+        if let ignMode = ConnectionMode(rawValue: config.connectionModes.ignition) {
+            proxyService.setConnectionMode(ignMode, for: .ignition)
+        }
+        if let ppsrMode = ConnectionMode(rawValue: config.connectionModes.ppsr) {
+            proxyService.setConnectionMode(ppsrMode, for: .ppsr)
+        }
+
+        blacklistService.autoExcludeBlacklist = config.settings.autoExcludeBlacklist
+        blacklistService.autoBlacklistNoAcc = config.settings.autoBlacklistNoAcc
+
+        return result
+    }
+
+    private func formatProxyLine(_ ep: ExportableConfig.ExportProxy) -> String {
+        if let u = ep.username, let p = ep.password {
+            return "socks5://\(u):\(p)@\(ep.host):\(ep.port)"
+        }
+        return "socks5://\(ep.host):\(ep.port)"
+    }
 
     func exportComprehensiveState() -> String {
         var sections: [String] = []

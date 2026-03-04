@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 import UIKit
+import Vision
 
 nonisolated enum LoginTargetSite: String, CaseIterable, Sendable {
     case joefortune = "Joe Fortune"
@@ -545,7 +546,128 @@ class LoginSiteWebSession: NSObject {
             return (true, "Login via form submit: \(result)")
         }
 
-        return (false, "Login button not found after all strategies")
+        let ocrResult = await ocrClickLoginButton()
+        if ocrResult.success {
+            return (true, "Login via OCR: \(ocrResult.detail)")
+        }
+
+        return (false, "Login button not found after all strategies + OCR")
+    }
+
+    func ocrClickLoginButton() async -> (success: Bool, detail: String) {
+        guard let webView else { return (false, "No WebView") }
+        guard let screenshot = await captureScreenshot() else { return (false, "Screenshot failed") }
+        guard let cgImage = screenshot.cgImage else { return (false, "CGImage conversion failed") }
+
+        let viewBounds = webView.bounds
+        let imageWidth = CGFloat(cgImage.width)
+        let imageHeight = CGFloat(cgImage.height)
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.customWords = ["LOGIN", "Log In", "SIGN IN", "Sign In", "LOG IN"]
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return (false, "Vision OCR failed: \(error.localizedDescription)")
+        }
+
+        guard let observations = request.results else { return (false, "No OCR results") }
+
+        let loginTerms = ["log in", "login", "sign in", "signin"]
+        var bestMatch: (observation: VNRecognizedTextObservation, text: String)?
+
+        for observation in observations {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            let text = candidate.string.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.count > 20 { continue }
+            for term in loginTerms {
+                if text == term || text.contains(term) {
+                    bestMatch = (observation, candidate.string)
+                    break
+                }
+            }
+            if bestMatch != nil { break }
+        }
+
+        guard let match = bestMatch else { return (false, "OCR: no LOGIN text found in \(observations.count) observations") }
+
+        let boundingBox = match.observation.boundingBox
+        let normalizedCenterX = boundingBox.midX
+        let normalizedCenterY = 1.0 - boundingBox.midY
+
+        let pixelX = normalizedCenterX * imageWidth
+        let pixelY = normalizedCenterY * imageHeight
+
+        let scaleX = viewBounds.width / imageWidth
+        let scaleY = viewBounds.height / imageHeight
+        let viewX = pixelX * scaleX
+        let viewY = pixelY * scaleY
+
+        let randOffsetX = CGFloat.random(in: -3...3)
+        let randOffsetY = CGFloat.random(in: -3...3)
+        let targetX = viewX + randOffsetX
+        let targetY = viewY + randOffsetY
+
+        let holdDuration = Int.random(in: 60...220)
+
+        let humanMoveJS = """
+        (function() {
+            var cx = \(targetX);
+            var cy = \(targetY);
+            var el = document.elementFromPoint(cx, cy);
+            if (!el) return 'NO_ELEMENT_AT_COORDS';
+
+            function jitter(v, range) { return v + (Math.random() * range * 2 - range); }
+
+            var steps = 3 + Math.floor(Math.random() * 3);
+            var startX = cx + (Math.random() * 40 - 20);
+            var startY = cy + (Math.random() * 40 - 20);
+            for (var i = 0; i <= steps; i++) {
+                var t = i / steps;
+                var mx = startX + (cx - startX) * t + (Math.random() * 2 - 1);
+                var my = startY + (cy - startY) * t + (Math.random() * 2 - 1);
+                try {
+                    el.dispatchEvent(new PointerEvent('pointermove', {bubbles:true,clientX:mx,clientY:my,pointerId:1,pointerType:'mouse'}));
+                    el.dispatchEvent(new MouseEvent('mousemove', {bubbles:true,clientX:mx,clientY:my}));
+                } catch(e) {}
+            }
+
+            try {
+                el.dispatchEvent(new PointerEvent('pointerover', {bubbles:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
+                el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true,clientX:cx,clientY:cy}));
+                el.dispatchEvent(new PointerEvent('pointerenter', {bubbles:false,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse'}));
+                el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:false,clientX:cx,clientY:cy}));
+            } catch(e) {}
+
+            el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:jitter(cx,1),clientY:jitter(cy,1),pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+            el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,view:window,clientX:jitter(cx,1),clientY:jitter(cy,1),button:0,buttons:1}));
+
+            el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:jitter(cx,1.5),clientY:jitter(cy,1.5),pointerId:1,pointerType:'mouse',button:0}));
+            el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,view:window,clientX:jitter(cx,1.5),clientY:jitter(cy,1.5),button:0}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:jitter(cx,1),clientY:jitter(cy,1),button:0}));
+
+            el.focus();
+            try { el.click(); } catch(e) {}
+
+            var tag = el.tagName || 'unknown';
+            var text = (el.textContent || el.value || '').substring(0, 30).trim();
+            return 'OCR_CLICKED:' + tag + ':' + text;
+        })();
+        """
+
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 30...120)))
+
+        let result = await executeJS(humanMoveJS)
+        if let result, result.hasPrefix("OCR_CLICKED") {
+            try? await Task.sleep(for: .milliseconds(holdDuration))
+            return (true, "\(result) at (\(Int(targetX)),\(Int(targetY))) text='\(match.text)' hold=\(holdDuration)ms")
+        }
+
+        return (false, "OCR element interaction failed: \(result ?? "nil")")
     }
 
     func verifyClickRegistered(timeout: TimeInterval = 3) async -> (registered: Bool, detail: String) {
