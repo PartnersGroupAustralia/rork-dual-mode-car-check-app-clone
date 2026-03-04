@@ -35,10 +35,35 @@ struct MainMenuView: View {
 
                 VStack {
                     Spacer()
-                    Text("v10.0")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.15))
-                        .padding(.bottom, geo.safeAreaInsets.bottom + 6)
+                    HStack {
+                        Button {
+                            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                                activeMode = .debugLog
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "doc.text.magnifyingglass")
+                                    .font(.system(size: 9, weight: .semibold))
+                                Text("DEBUG LOG")
+                                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                            }
+                            .foregroundStyle(.white.opacity(0.35))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(.white.opacity(0.06))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.leading, 16)
+
+                        Spacer()
+
+                        Text("v10.0")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.15))
+                            .padding(.trailing, 16)
+                    }
+                    .padding(.bottom, geo.safeAreaInsets.bottom + 6)
                 }
             }
         }
@@ -291,4 +316,5 @@ nonisolated enum ActiveAppMode: String, Sendable {
     case ignition
     case ppsr
     case superTest
+    case debugLog
 }

@@ -85,6 +85,7 @@ class PPSRAutomationViewModel {
     private let notifications = PPSRNotificationService.shared
     private let emailRotation = PPSREmailRotationService.shared
     private let diagnostics = PPSRConnectionDiagnosticService.shared
+    private let logger = DebugLogger.shared
     private var batchTask: Task<Void, Never>?
 
     init() {
@@ -503,6 +504,7 @@ class PPSRAutomationViewModel {
         isPaused = false
         isStopping = false
         log("Starting batch test: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
+        logger.log("PPSR BATCH START: \(cardsToTest.count) cards, concurrency=\(maxConcurrency), stealth=\(stealthEnabled)", category: .ppsr, level: .info, metadata: ["count": "\(cardsToTest.count)"])
         isRunning = true
 
         var batchWorking = 0
@@ -643,5 +645,13 @@ class PPSRAutomationViewModel {
 
     func log(_ message: String, level: PPSRLogEntry.Level = .info) {
         globalLogs.insert(PPSRLogEntry(message: message, level: level), at: 0)
+        let debugLevel: DebugLogLevel
+        switch level {
+        case .info: debugLevel = .info
+        case .success: debugLevel = .success
+        case .warning: debugLevel = .warning
+        case .error: debugLevel = .error
+        }
+        logger.log(message, category: .ppsr, level: debugLevel)
     }
 }

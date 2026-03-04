@@ -60,7 +60,7 @@ struct LoginContentView: View {
                 switch initialMode {
                 case .joe: vm.setSiteMode(.joe)
                 case .ignition: vm.setSiteMode(.ignition)
-                case .ppsr, .superTest: break
+                case .ppsr, .superTest, .debugLog: break
                 }
             }
         }
@@ -3195,6 +3195,31 @@ struct LoginMoreMenuView: View {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                Section("Debug Log") {
+                    NavigationLink {
+                        DebugLogView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.title3).foregroundStyle(.purple)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Full Debug Log").font(.subheadline.bold())
+                                let logger = DebugLogger.shared
+                                Text("\(logger.entryCount) entries \(logger.errorCount > 0 ? "• \(logger.errorCount) errors" : "")")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if DebugLogger.shared.errorCount > 0 {
+                                Text("\(DebugLogger.shared.errorCount)")
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(.red)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.red.opacity(0.12)).clipShape(Capsule())
                             }
                         }
                     }

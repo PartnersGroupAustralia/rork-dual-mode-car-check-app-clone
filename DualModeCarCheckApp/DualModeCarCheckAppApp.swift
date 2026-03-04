@@ -26,6 +26,12 @@ struct DualModeCarCheckAppApp: App {
                         ContentView()
                     case .superTest:
                         SuperTestContainerView()
+                    case .debugLog:
+                        NavigationStack {
+                            DebugLogView()
+                        }
+                        .overlay(alignment: .bottomLeading) { MainMenuButton() }
+                        .preferredColorScheme(.dark)
                     }
                 }
                 .transition(.asymmetric(

@@ -33,7 +33,14 @@ struct SuperTestView: View {
         .navigationTitle("Super Test")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                NavigationLink {
+                    DebugLogView()
+                } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.subheadline)
+                }
+
                 Button {
                     showLogs.toggle()
                 } label: {

@@ -17,6 +17,7 @@ class PPSRAutomationEngine {
     var stealthEnabled: Bool = false
     var retrySubmitOnFail: Bool = false
     var screenshotCropRect: CGRect = .zero
+    private let logger = DebugLogger.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
@@ -31,20 +32,30 @@ class PPSRAutomationEngine {
         activeSessions += 1
         defer { activeSessions -= 1 }
 
+        let sessionId = "ppsr_\(check.card.displayNumber.suffix(8))_\(UUID().uuidString.prefix(6))"
         check.startedAt = Date()
+
+        logger.startSession(sessionId, category: .ppsr, message: "Starting PPSR check for \(check.card.brand) \(check.card.displayNumber)")
+        logger.log("Config: timeout=\(Int(timeout))s stealth=\(stealthEnabled) retrySubmit=\(retrySubmitOnFail) VIN=\(check.vin) email=\(check.email)", category: .ppsr, level: .debug, sessionId: sessionId)
 
         let session = LoginWebSession()
         session.stealthEnabled = stealthEnabled
         session.onFingerprintLog = { [weak self] msg, level in
             check.logs.append(PPSRLogEntry(message: msg, level: level))
             self?.onLog?(msg, level)
+            let debugLevel: DebugLogLevel = level == .error ? .error : level == .warning ? .warning : .trace
+            self?.logger.log(msg, category: .fingerprint, level: debugLevel, sessionId: sessionId)
         }
         session.setUp()
-        defer { session.tearDown() }
+        defer {
+            session.tearDown()
+            logger.log("WebView session tearDown", category: .webView, level: .trace, sessionId: sessionId)
+        }
 
+        logger.startTimer(key: sessionId)
         let outcome: CheckOutcome = await withTaskGroup(of: CheckOutcome.self) { group in
             group.addTask {
-                return await self.performCheck(session: session, check: check)
+                return await self.performCheck(session: session, check: check, sessionId: sessionId)
             }
 
             group.addTask {
@@ -56,40 +67,53 @@ class PPSRAutomationEngine {
             group.cancelAll()
             return first
         }
+        let totalMs = logger.stopTimer(key: sessionId)
 
         if outcome == .timeout {
             check.status = .failed
             check.errorMessage = "Test timed out after \(Int(timeout))s — auto-requeuing"
             check.completedAt = Date()
             check.logs.append(PPSRLogEntry(message: "TIMEOUT: Test exceeded \(Int(timeout))s limit", level: .warning))
+            logger.log("TIMEOUT after \(Int(timeout))s for \(check.card.displayNumber)", category: .ppsr, level: .error, sessionId: sessionId, durationMs: totalMs)
             onUnusualFailure?("Timeout for \(check.card.displayNumber) after \(Int(timeout))s")
         }
 
         if outcome == .connectionFailure {
+            logger.log("CONNECTION FAILURE for \(check.card.displayNumber)", category: .network, level: .error, sessionId: sessionId, durationMs: totalMs)
             onUnusualFailure?("Connection failure for \(check.card.displayNumber)")
         }
+
+        logger.endSession(sessionId, category: .ppsr, message: "PPSR check COMPLETE: \(outcome) for \(check.card.displayNumber)", level: outcome == .pass ? .success : outcome == .failInstitution ? .warning : .error)
 
         return outcome
     }
 
-    private func performCheck(session: LoginWebSession, check: PPSRCheck) async -> CheckOutcome {
+    private func performCheck(session: LoginWebSession, check: PPSRCheck, sessionId: String = "") async -> CheckOutcome {
         advanceTo(.fillingVIN, check: check, message: "Loading PPSR CarCheck: \(LoginWebSession.targetURL.absoluteString)")
+        logger.log("Phase: LOAD PPSR PAGE", category: .automation, level: .info, sessionId: sessionId)
 
         if stealthEnabled {
-            await performDoHPreflight(check: check)
+            await performDoHPreflight(check: check, sessionId: sessionId)
         }
 
         var loaded = false
         for attempt in 1...3 {
+            logger.startTimer(key: "\(sessionId)_pageload_\(attempt)")
             loaded = await session.loadPage(timeout: 30)
-            if loaded { break }
+            let loadMs = logger.stopTimer(key: "\(sessionId)_pageload_\(attempt)")
+            if loaded {
+                logger.log("Page load attempt \(attempt)/3 SUCCESS", category: .webView, level: .success, sessionId: sessionId, durationMs: loadMs)
+                break
+            }
             let errorDetail = session.lastNavigationError ?? "unknown error"
+            logger.log("Page load attempt \(attempt)/3 FAILED: \(errorDetail)", category: .webView, level: .warning, sessionId: sessionId, durationMs: loadMs)
             check.logs.append(PPSRLogEntry(message: "Page load attempt \(attempt)/3 failed — \(errorDetail)", level: .warning))
             if attempt < 3 {
                 let waitTime = Double(attempt) * 2
                 check.logs.append(PPSRLogEntry(message: "Healing: waiting \(Int(waitTime))s before retry...", level: .info))
                 try? await Task.sleep(for: .seconds(waitTime))
                 if attempt == 2 {
+                    logger.log("Full session reset before final attempt", category: .webView, level: .debug, sessionId: sessionId)
                     session.tearDown()
                     session.stealthEnabled = stealthEnabled
                     session.setUp()
@@ -99,6 +123,7 @@ class PPSRAutomationEngine {
 
         guard loaded else {
             let errorDetail = session.lastNavigationError ?? "Unknown error"
+            logger.log("FATAL: PPSR page load failed after 3 attempts — \(errorDetail)", category: .network, level: .critical, sessionId: sessionId)
             failCheck(check, message: "FATAL: Failed to load PPSR page after 3 attempts — \(errorDetail)")
             await captureScreenshotForCheck(session: session, check: check, step: "page_load_failed", note: "Page failed to load", autoResult: .unknown)
             onConnectionFailure?("Page load failed: \(errorDetail)")
@@ -107,8 +132,12 @@ class PPSRAutomationEngine {
 
         let pageTitle = await session.getPageTitle()
         check.logs.append(PPSRLogEntry(message: "Page loaded: \"\(pageTitle)\"", level: .info))
+        logger.log("Page title: \"\(pageTitle)\"", category: .webView, level: .debug, sessionId: sessionId)
 
+        logger.startTimer(key: "\(sessionId)_fieldverify")
         let verification = await session.verifyFieldsExist()
+        let fieldMs = logger.stopTimer(key: "\(sessionId)_fieldverify")
+        logger.log("Field verification: \(verification.found)/6 found", category: .automation, level: verification.found >= 6 ? .debug : .warning, sessionId: sessionId, durationMs: fieldMs)
         if verification.found < 6 {
             check.logs.append(PPSRLogEntry(message: "Field scan: \(verification.found)/6 found. Missing: [\(verification.missing.joined(separator: ", "))]", level: .warning))
             if verification.found == 0 {
@@ -125,6 +154,7 @@ class PPSRAutomationEngine {
             check.logs.append(PPSRLogEntry(message: "All 6 form fields verified present and enabled", level: .success))
         }
 
+        logger.log("Phase: FILL FORM FIELDS", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.fillingVIN, check: check, message: "Filling VIN: \(check.vin)")
         let vinResult = await retryFill(session: session, check: check, fieldName: "VIN") {
             await session.fillVIN(check.vin)
@@ -139,6 +169,7 @@ class PPSRAutomationEngine {
         guard emailResult else { return .connectionFailure }
         try? await Task.sleep(for: .milliseconds(300))
 
+        logger.log("Phase: FILL PAYMENT", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.enteringPayment, check: check, message: "Filling card: \(check.card.brand) \(check.card.displayNumber)")
         let cardResult = await retryFill(session: session, check: check, fieldName: "Card Number") {
             await session.fillCardNumber(check.card.number)
@@ -162,15 +193,20 @@ class PPSRAutomationEngine {
         guard cvvResult else { return .connectionFailure }
         try? await Task.sleep(for: .milliseconds(500))
 
+        logger.log("Phase: SUBMIT", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.processingPayment, check: check, message: "Clicking 'Show My Results' button")
         var submitResult: (success: Bool, detail: String) = (false, "")
         for attempt in 1...3 {
+            logger.startTimer(key: "\(sessionId)_submit_\(attempt)")
             submitResult = await session.clickShowMyResults()
+            let submitMs = logger.stopTimer(key: "\(sessionId)_submit_\(attempt)")
             if submitResult.success {
                 check.logs.append(PPSRLogEntry(message: "Submit: \(submitResult.detail)", level: .success))
+                logger.log("Submit attempt \(attempt): SUCCESS — \(submitResult.detail)", category: .automation, level: .success, sessionId: sessionId, durationMs: submitMs)
                 break
             }
             check.logs.append(PPSRLogEntry(message: "Submit attempt \(attempt)/3 failed: \(submitResult.detail)", level: .warning))
+            logger.log("Submit attempt \(attempt)/3 FAILED: \(submitResult.detail)", category: .automation, level: .warning, sessionId: sessionId, durationMs: submitMs)
             if attempt < 3 {
                 try? await Task.sleep(for: .seconds(Double(attempt)))
             }
@@ -208,6 +244,7 @@ class PPSRAutomationEngine {
 
         let finalEvaluation = evaluatePPSRResponse(contentLower: contentLower, pageContent: pageContent)
         check.responseSnippet = String(pageContent.prefix(500))
+        logger.log("PPSR evaluation: \(finalEvaluation.outcome) score=\(finalEvaluation.score) — \(finalEvaluation.reason)", category: .evaluation, level: finalEvaluation.outcome == .pass ? .success : .warning, sessionId: sessionId)
 
         let autoResult: PPSRDebugScreenshot.AutoDetectedResult
         switch finalEvaluation.outcome {
@@ -411,14 +448,17 @@ class PPSRAutomationEngine {
         onScreenshot?(screenshot)
     }
 
-    private func performDoHPreflight(check: PPSRCheck) async {
+    private func performDoHPreflight(check: PPSRCheck, sessionId: String = "") async {
         guard let host = LoginWebSession.targetURL.host else { return }
         let provider = dohService.currentProvider
         check.logs.append(PPSRLogEntry(message: "DoH preflight: resolving \(host) via \(provider.name)", level: .info))
+        logger.log("DoH preflight: resolving \(host) via \(provider.name)", category: .dns, level: .debug, sessionId: sessionId)
         if let result = await dohService.preflightResolve(hostname: host) {
             check.logs.append(PPSRLogEntry(message: "DoH resolved: \(result.ip) via \(result.provider) in \(result.latencyMs)ms", level: .success))
+            logger.log("DoH resolved: \(result.ip) via \(result.provider)", category: .dns, level: .success, sessionId: sessionId, durationMs: result.latencyMs)
         } else {
             check.logs.append(PPSRLogEntry(message: "DoH preflight failed — falling back to system DNS", level: .warning))
+            logger.log("DoH preflight FAILED — falling back to system DNS", category: .dns, level: .warning, sessionId: sessionId)
         }
     }
 

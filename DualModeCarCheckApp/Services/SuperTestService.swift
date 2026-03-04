@@ -97,6 +97,7 @@ nonisolated struct SuperTestReport: Sendable {
 @MainActor
 class SuperTestService {
     static let shared = SuperTestService()
+    private let logger = DebugLogger.shared
 
     var isRunning: Bool = false
     var currentPhase: SuperTestPhase = .idle
@@ -136,6 +137,7 @@ class SuperTestService {
         currentItem = ""
 
         addLog("SUPER TEST — Starting comprehensive infrastructure test")
+        logger.startSession("supertest", category: .superTest, message: "SUPER TEST starting comprehensive infrastructure test")
 
         let startTime = Date()
 
@@ -171,6 +173,7 @@ class SuperTestService {
         currentPhase = .idle
         currentItem = ""
         addLog("SUPER TEST — Stopped by user", level: .warning)
+        logger.endSession("supertest", category: .superTest, message: "SUPER TEST stopped by user", level: .warning)
     }
 
     private func finalize(startTime: Date) {
@@ -205,6 +208,7 @@ class SuperTestService {
         isRunning = false
 
         addLog("SUPER TEST COMPLETE — \(totalPassed)/\(totalTested) passed, \(totalFailed) failed, \(disabledCount) auto-disabled, \(enabledCount) auto-enabled in \(lastReport!.formattedDuration)", level: .success)
+        logger.endSession("supertest", category: .superTest, message: "SUPER TEST COMPLETE: \(totalPassed)/\(totalTested) passed, \(totalFailed) failed", level: totalFailed == 0 ? .success : .warning)
     }
 
     private func countDisabledItems() -> Int {
@@ -222,6 +226,7 @@ class SuperTestService {
         currentItem = "Fingerprint.com Detection Test"
         phaseProgress[.fingerprint] = (total: 2, done: 0)
         addLog("Phase 1: Fingerprint & Headless Detection")
+        logger.log("Phase 1: Fingerprint & Headless Detection", category: .superTest, level: .info, sessionId: "supertest")
 
         let webViewScore = await runWebViewFingerprintTest()
         phaseProgress[.fingerprint] = (total: 2, done: 1)
@@ -322,18 +327,23 @@ class SuperTestService {
         let total = urls.count
         phaseProgress[.joeURLs] = (total: total, done: 0)
         addLog("Phase 2: Testing \(total) Joe Fortune URLs")
+        logger.log("Phase 2: Testing \(total) Joe Fortune URLs", category: .superTest, level: .info, sessionId: "supertest")
 
         for (index, rotatingURL) in urls.enumerated() {
             if Task.isCancelled { return }
             currentItem = rotatingURL.host
+            logger.startTimer(key: "supertest_joe_\(index)")
             let result = await pingURL(rotatingURL.urlString, name: rotatingURL.host, category: .joeURLs)
+            let pingMs = logger.stopTimer(key: "supertest_joe_\(index)")
             results.append(result)
 
             if result.passed {
                 urlRotation.toggleURL(id: rotatingURL.id, enabled: true)
+                logger.log("Joe URL PASS: \(rotatingURL.host) \(result.detail)", category: .url, level: .success, sessionId: "supertest", durationMs: pingMs)
             } else {
                 urlRotation.toggleURL(id: rotatingURL.id, enabled: false)
                 addLog("Auto-disabled Joe URL: \(rotatingURL.host)", level: .warning)
+                logger.log("Joe URL FAIL (auto-disabled): \(rotatingURL.host) \(result.detail)", category: .url, level: .warning, sessionId: "supertest", durationMs: pingMs)
             }
 
             phaseProgress[.joeURLs] = (total: total, done: index + 1)
@@ -352,18 +362,23 @@ class SuperTestService {
         let total = urls.count
         phaseProgress[.ignitionURLs] = (total: total, done: 0)
         addLog("Phase 3: Testing \(total) Ignition URLs")
+        logger.log("Phase 3: Testing \(total) Ignition URLs", category: .superTest, level: .info, sessionId: "supertest")
 
         for (index, rotatingURL) in urls.enumerated() {
             if Task.isCancelled { return }
             currentItem = rotatingURL.host
+            logger.startTimer(key: "supertest_ign_\(index)")
             let result = await pingURL(rotatingURL.urlString, name: rotatingURL.host, category: .ignitionURLs)
+            let pingMs = logger.stopTimer(key: "supertest_ign_\(index)")
             results.append(result)
 
             if result.passed {
                 urlRotation.toggleURL(id: rotatingURL.id, enabled: true)
+                logger.log("Ignition URL PASS: \(rotatingURL.host)", category: .url, level: .success, sessionId: "supertest", durationMs: pingMs)
             } else {
                 urlRotation.toggleURL(id: rotatingURL.id, enabled: false)
                 addLog("Auto-disabled Ignition URL: \(rotatingURL.host)", level: .warning)
+                logger.log("Ignition URL FAIL (auto-disabled): \(rotatingURL.host)", category: .url, level: .warning, sessionId: "supertest", durationMs: pingMs)
             }
 
             phaseProgress[.ignitionURLs] = (total: total, done: index + 1)
@@ -381,6 +396,7 @@ class SuperTestService {
         currentItem = "transact.ppsr.gov.au"
         phaseProgress[.ppsrConnection] = (total: 3, done: 0)
         addLog("Phase 4: Testing PPSR Connection")
+        logger.log("Phase 4: Testing PPSR Connection", category: .superTest, level: .info, sessionId: "supertest")
 
         let healthCheck = await diagnostics.quickHealthCheck()
         phaseProgress[.ppsrConnection] = (total: 3, done: 1)
@@ -427,6 +443,7 @@ class SuperTestService {
         let total = providers.count
         phaseProgress[.dnsServers] = (total: total, done: 0)
         addLog("Phase 5: Testing \(total) DNS Servers")
+        logger.log("Phase 5: Testing \(total) DNS Servers", category: .superTest, level: .info, sessionId: "supertest")
 
         for (index, provider) in providers.enumerated() {
             if Task.isCancelled { return }
@@ -447,6 +464,9 @@ class SuperTestService {
             dohService.toggleProvider(id: provider.id, enabled: passed)
             if !passed {
                 addLog("Auto-disabled DNS: \(provider.name)", level: .warning)
+                logger.log("DNS FAIL (auto-disabled): \(provider.name)", category: .dns, level: .warning, sessionId: "supertest")
+            } else {
+                logger.log("DNS PASS: \(provider.name) \(answer!.ip) in \(answer!.latencyMs)ms", category: .dns, level: .success, sessionId: "supertest", durationMs: answer?.latencyMs)
             }
 
             phaseProgress[.dnsServers] = (total: total, done: index + 1)
@@ -460,6 +480,7 @@ class SuperTestService {
     // MARK: - SOCKS5 Proxy Tests
 
     private func runSOCKS5ProxyTests() async {
+        logger.log("Phase 6: Testing SOCKS5 Proxies", category: .superTest, level: .info, sessionId: "supertest")
         currentPhase = .socks5Proxies
         let allProxies: [(proxy: ProxyConfig, target: ProxyRotationService.ProxyTarget)] =
             proxyService.savedProxies.map { ($0, .joe) } +
@@ -532,15 +553,18 @@ class SuperTestService {
 
         if passed {
             proxyService.markProxyWorking(proxy)
+            logger.log("Proxy PASS: \(proxy.displayString) [\(targetLabel)] in \(latency)ms", category: .proxy, level: .success, sessionId: "supertest", durationMs: latency)
         } else {
             proxyService.markProxyFailed(proxy)
             addLog("Auto-failed proxy: \(proxy.displayString) [\(targetLabel)]", level: .warning)
+            logger.log("Proxy FAIL: \(proxy.displayString) [\(targetLabel)]", category: .proxy, level: .warning, sessionId: "supertest")
         }
     }
 
     // MARK: - OpenVPN Profile Tests
 
     private func runOpenVPNProfileTests() async {
+        logger.log("Phase 7: Testing OpenVPN Profiles", category: .superTest, level: .info, sessionId: "supertest")
         currentPhase = .openvpnProfiles
         let allVPN: [(config: OpenVPNConfig, target: ProxyRotationService.ProxyTarget)] =
             proxyService.joeVPNConfigs.map { ($0, .joe) } +
@@ -581,6 +605,9 @@ class SuperTestService {
             proxyService.toggleVPNConfig(vpnConfig, target: target, enabled: passed)
             if !passed {
                 addLog("Auto-disabled VPN: \(vpnConfig.fileName) [\(targetLabel)]", level: .warning)
+                logger.log("VPN FAIL (auto-disabled): \(vpnConfig.fileName) [\(targetLabel)]", category: .vpn, level: .warning, sessionId: "supertest")
+            } else {
+                logger.log("VPN PASS: \(vpnConfig.fileName) [\(targetLabel)] in \(latency)ms", category: .vpn, level: .success, sessionId: "supertest", durationMs: latency)
             }
 
             phaseProgress[.openvpnProfiles] = (total: total, done: index + 1)

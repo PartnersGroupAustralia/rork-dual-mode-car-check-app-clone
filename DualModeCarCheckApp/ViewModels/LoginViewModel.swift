@@ -109,6 +109,7 @@ class LoginViewModel {
     private let secondaryEngine = LoginAutomationEngine()
     private let persistence = LoginPersistenceService.shared
     private let notifications = PPSRNotificationService.shared
+    private let logger = DebugLogger.shared
     private var batchTask: Task<Void, Never>?
     private var secondaryBatchTask: Task<Void, Never>?
 
@@ -355,6 +356,7 @@ class LoginViewModel {
     }
 
     func smartImportCredentials(_ input: String) {
+        logger.log("Smart import started (\(input.count) chars)", category: .persistence, level: .info)
         let parsed = LoginCredential.smartParse(input)
         let lines = input.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -395,6 +397,7 @@ class LoginViewModel {
 
         if parsed.count > 0 {
             log("Smart import: \(added) added from \(parsed.count) parsed (\(lines.count) lines)", level: .success)
+            logger.log("Credential import: \(added) added, \(skippedBlacklist) blacklisted, from \(parsed.count) parsed", category: .persistence, level: .success)
         }
         persistCredentials()
     }
@@ -526,9 +529,11 @@ class LoginViewModel {
 
         if dualSiteMode {
             log("Starting DUAL-SITE batch: \(credsToTest.count) creds, Joe + Ignition simultaneously")
+            logger.log("BATCH START (dual): \(credsToTest.count) creds, concurrency=\(maxConcurrency), stealth=\(stealthEnabled)", category: .login, level: .info, metadata: ["mode": "dual", "count": "\(credsToTest.count)"])
             testDualSite(credsToTest)
         } else {
             log("Starting batch test: \(credsToTest.count) credentials, max \(maxConcurrency) concurrent, stealth: \(stealthEnabled ? "ON" : "OFF")")
+            logger.log("BATCH START: \(credsToTest.count) creds, concurrency=\(maxConcurrency), stealth=\(stealthEnabled), site=\(targetSite.rawValue)", category: .login, level: .info, metadata: ["mode": "single", "count": "\(credsToTest.count)", "site": targetSite.rawValue])
             testSingleSiteBatch(credsToTest)
         }
     }
@@ -670,8 +675,10 @@ class LoginViewModel {
 
         if stoppedEarly {
             log("Batch stopped: \(working) working, \(dead) dead, \(requeued) requeued", level: .warning)
+            logger.log("BATCH STOPPED: \(working) working, \(dead) dead, \(requeued) requeued", category: .login, level: .warning)
         } else {
             log("Batch complete: \(working) working, \(dead) dead, \(requeued) requeued", level: .success)
+            logger.log("BATCH COMPLETE: \(working) working, \(dead) dead, \(requeued) requeued (\(result.alivePercentage)% alive)", category: .login, level: .success, metadata: ["working": "\(working)", "dead": "\(dead)", "requeued": "\(requeued)"])
         }
 
         showBatchResultPopup = true
@@ -880,5 +887,13 @@ class LoginViewModel {
 
     func log(_ message: String, level: PPSRLogEntry.Level = .info) {
         globalLogs.insert(PPSRLogEntry(message: message, level: level), at: 0)
+        let debugLevel: DebugLogLevel
+        switch level {
+        case .info: debugLevel = .info
+        case .success: debugLevel = .success
+        case .warning: debugLevel = .warning
+        case .error: debugLevel = .error
+        }
+        logger.log(message, category: .login, level: debugLevel)
     }
 }

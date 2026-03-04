@@ -19,6 +19,7 @@ class LoginAutomationEngine {
     let maxConcurrency: Int = 8
     var debugMode: Bool = false
     var stealthEnabled: Bool = false
+    private let logger = DebugLogger.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
@@ -35,20 +36,31 @@ class LoginAutomationEngine {
         activeSessions += 1
         defer { activeSessions -= 1 }
 
+        let sessionId = "login_\(attempt.credential.username.prefix(12))_\(UUID().uuidString.prefix(6))"
         attempt.startedAt = Date()
+
+        logger.startSession(sessionId, category: .login, message: "Starting login test for \(attempt.credential.username) → \(targetURL.host ?? targetURL.absoluteString)")
+        logger.log("Config: timeout=\(Int(timeout))s stealth=\(stealthEnabled) activeSessions=\(activeSessions)/\(maxConcurrency)", category: .login, level: .debug, sessionId: sessionId, metadata: ["url": targetURL.absoluteString, "username": attempt.credential.username])
 
         let session = LoginSiteWebSession(targetURL: targetURL)
         session.stealthEnabled = stealthEnabled
         session.onFingerprintLog = { [weak self] msg, level in
             attempt.logs.append(PPSRLogEntry(message: msg, level: level))
             self?.onLog?(msg, level)
+            let debugLevel: DebugLogLevel = level == .error ? .error : level == .warning ? .warning : .trace
+            self?.logger.log(msg, category: .fingerprint, level: debugLevel, sessionId: sessionId)
         }
+        logger.log("WebView session setUp (wipeAll: true)", category: .webView, level: .trace, sessionId: sessionId)
         session.setUp(wipeAll: true)
-        defer { session.tearDown(wipeAll: true) }
+        defer {
+            session.tearDown(wipeAll: true)
+            logger.log("WebView session tearDown (wipeAll: true)", category: .webView, level: .trace, sessionId: sessionId)
+        }
 
+        logger.startTimer(key: sessionId)
         let outcome: LoginOutcome = await withTaskGroup(of: LoginOutcome.self) { group in
             group.addTask {
-                return await self.performLoginTest(session: session, attempt: attempt)
+                return await self.performLoginTest(session: session, attempt: attempt, sessionId: sessionId)
             }
 
             group.addTask {
@@ -60,16 +72,19 @@ class LoginAutomationEngine {
             group.cancelAll()
             return first
         }
+        let totalMs = logger.stopTimer(key: sessionId)
 
         if outcome == .timeout {
             attempt.status = .failed
             attempt.errorMessage = "Test timed out after \(Int(timeout))s — auto-requeuing"
             attempt.completedAt = Date()
             attempt.logs.append(PPSRLogEntry(message: "TIMEOUT: Test exceeded \(Int(timeout))s limit", level: .warning))
+            logger.log("TIMEOUT after \(Int(timeout))s for \(attempt.credential.username)", category: .login, level: .error, sessionId: sessionId, durationMs: totalMs)
             onUnusualFailure?("Timeout for \(attempt.credential.username) after \(Int(timeout))s")
         }
 
         if outcome == .connectionFailure {
+            logger.log("CONNECTION FAILURE for \(attempt.credential.username) on \(targetURL.host ?? "")", category: .network, level: .error, sessionId: sessionId, durationMs: totalMs)
             onURLFailure?(targetURL.absoluteString)
             onUnusualFailure?("Connection failure for \(attempt.credential.username)")
         }
@@ -80,28 +95,40 @@ class LoginAutomationEngine {
 
         if let started = attempt.startedAt {
             let responseTime = Date().timeIntervalSince(started)
+            logger.log("Response time: \(Int(responseTime * 1000))ms on \(targetURL.host ?? "")", category: .timing, level: .debug, sessionId: sessionId, durationMs: Int(responseTime * 1000))
             onResponseTime?(targetURL.absoluteString, responseTime)
         }
+
+        logger.endSession(sessionId, category: .login, message: "Login test COMPLETE: \(outcome) for \(attempt.credential.username)", level: outcome == .success ? .success : outcome == .noAcc ? .warning : .error)
 
         return outcome
     }
 
-    private func performLoginTest(session: LoginSiteWebSession, attempt: LoginAttempt) async -> LoginOutcome {
+    private func performLoginTest(session: LoginSiteWebSession, attempt: LoginAttempt, sessionId: String = "") async -> LoginOutcome {
         advanceTo(.loadingPage, attempt: attempt, message: "Loading login page: \(session.targetURL.absoluteString)")
+        logger.log("Phase: LOAD PAGE → \(session.targetURL.absoluteString)", category: .automation, level: .info, sessionId: sessionId)
 
         let preLoginURL = session.targetURL.absoluteString.lowercased()
 
         var loaded = false
         for attemptNum in 1...3 {
+            logger.startTimer(key: "\(sessionId)_pageload_\(attemptNum)")
             loaded = await session.loadPage(timeout: 30)
-            if loaded { break }
+            let loadMs = logger.stopTimer(key: "\(sessionId)_pageload_\(attemptNum)")
+            if loaded {
+                logger.log("Page load attempt \(attemptNum)/3 SUCCESS", category: .webView, level: .success, sessionId: sessionId, durationMs: loadMs)
+                break
+            }
             let errorDetail = session.lastNavigationError ?? "unknown error"
+            logger.log("Page load attempt \(attemptNum)/3 FAILED: \(errorDetail)", category: .webView, level: .warning, sessionId: sessionId, durationMs: loadMs)
             attempt.logs.append(PPSRLogEntry(message: "Page load attempt \(attemptNum)/3 failed — \(errorDetail)", level: .warning))
             if attemptNum < 3 {
                 let waitTime = Double(attemptNum) * 2
                 attempt.logs.append(PPSRLogEntry(message: "Retrying in \(Int(waitTime))s...", level: .info))
+                logger.log("Retry wait \(Int(waitTime))s before attempt \(attemptNum + 1)", category: .automation, level: .trace, sessionId: sessionId)
                 try? await Task.sleep(for: .seconds(waitTime))
                 if attemptNum == 2 {
+                    logger.log("Full session reset before final attempt", category: .webView, level: .debug, sessionId: sessionId)
                     session.tearDown(wipeAll: true)
                     session.stealthEnabled = stealthEnabled
                     session.setUp(wipeAll: true)
@@ -111,6 +138,7 @@ class LoginAutomationEngine {
 
         guard loaded else {
             let errorDetail = session.lastNavigationError ?? "Unknown error"
+            logger.log("FATAL: Page load failed after 3 attempts — \(errorDetail)", category: .network, level: .critical, sessionId: sessionId)
             failAttempt(attempt, message: "FATAL: Failed to load login page after 3 attempts — \(errorDetail)")
             onConnectionFailure?("Page load failed: \(errorDetail)")
             await captureDebugScreenshot(session: session, attempt: attempt, step: "page_load_failed", note: "Failed to load", autoResult: .unknown)
@@ -119,20 +147,30 @@ class LoginAutomationEngine {
 
         let pageTitle = await session.getPageTitle()
         attempt.logs.append(PPSRLogEntry(message: "Page loaded: \"\(pageTitle)\"", level: .info))
+        logger.log("Page title: \"\(pageTitle)\"", category: .webView, level: .debug, sessionId: sessionId)
 
+        logger.startTimer(key: "\(sessionId)_cookies")
         await session.dismissCookieNotices()
+        let cookieMs = logger.stopTimer(key: "\(sessionId)_cookies")
         attempt.logs.append(PPSRLogEntry(message: "Cookie/consent notices dismissed", level: .info))
+        logger.log("Cookie notices dismissed", category: .webView, level: .trace, sessionId: sessionId, durationMs: cookieMs)
         try? await Task.sleep(for: .milliseconds(300))
 
         let preLoginContent = await session.getPageContent()
+        logger.log("Pre-login content captured (\(preLoginContent.count) chars)", category: .webView, level: .trace, sessionId: sessionId)
 
+        logger.startTimer(key: "\(sessionId)_fieldverify")
         let verification = await session.verifyLoginFieldsExist()
+        let fieldMs = logger.stopTimer(key: "\(sessionId)_fieldverify")
+        logger.log("Field verification: \(verification.found)/2 found", category: .automation, level: verification.found >= 2 ? .debug : .warning, sessionId: sessionId, durationMs: fieldMs, metadata: ["missing": verification.missing.joined(separator: ",")])
         if verification.found < 2 {
             attempt.logs.append(PPSRLogEntry(message: "Field scan: \(verification.found)/2 found. Missing: [\(verification.missing.joined(separator: ", "))]", level: .warning))
             if verification.found == 0 {
                 attempt.logs.append(PPSRLogEntry(message: "Waiting 4s for JavaScript-rendered content...", level: .info))
+                logger.log("No fields found — waiting 4s for JS render", category: .webView, level: .debug, sessionId: sessionId)
                 try? await Task.sleep(for: .seconds(4))
                 let retryVerification = await session.verifyLoginFieldsExist()
+                logger.log("Retry field verification: \(retryVerification.found)/2", category: .automation, level: retryVerification.found > 0 ? .info : .error, sessionId: sessionId)
                 if retryVerification.found == 0 {
                     failAttempt(attempt, message: "FATAL: No login fields found after extended wait")
                     await captureDebugScreenshot(session: session, attempt: attempt, step: "no_fields", note: "No login fields found", autoResult: .fail)
@@ -147,17 +185,24 @@ class LoginAutomationEngine {
         attempt.logs.append(PPSRLogEntry(message: "Pre-saved credentials (autofill simulation)", level: .info))
         try? await Task.sleep(for: .milliseconds(300))
 
+        logger.log("Phase: FILL CREDENTIALS", category: .automation, level: .info, sessionId: sessionId)
         advanceTo(.fillingCredentials, attempt: attempt, message: "Filling username: \(attempt.credential.username)")
-        let usernameResult = await retryFill(session: session, attempt: attempt, fieldName: "Username") {
+        logger.startTimer(key: "\(sessionId)_fill_user")
+        let usernameResult = await retryFill(session: session, attempt: attempt, fieldName: "Username", sessionId: sessionId) {
             await session.fillUsername(attempt.credential.username)
         }
+        let fillUserMs = logger.stopTimer(key: "\(sessionId)_fill_user")
+        logger.log("Username fill: \(usernameResult ? "SUCCESS" : "FAILED")", category: .automation, level: usernameResult ? .debug : .error, sessionId: sessionId, durationMs: fillUserMs)
         guard usernameResult else { return .connectionFailure }
         try? await Task.sleep(for: .milliseconds(400))
 
         attempt.logs.append(PPSRLogEntry(message: "Filling password: \(String(repeating: "•", count: min(attempt.credential.password.count, 8)))", level: .info))
-        let passwordResult = await retryFill(session: session, attempt: attempt, fieldName: "Password") {
+        logger.startTimer(key: "\(sessionId)_fill_pass")
+        let passwordResult = await retryFill(session: session, attempt: attempt, fieldName: "Password", sessionId: sessionId) {
             await session.fillPassword(attempt.credential.password)
         }
+        let fillPassMs = logger.stopTimer(key: "\(sessionId)_fill_pass")
+        logger.log("Password fill: \(passwordResult ? "SUCCESS" : "FAILED")", category: .automation, level: passwordResult ? .debug : .error, sessionId: sessionId, durationMs: fillPassMs)
         guard passwordResult else { return .connectionFailure }
         try? await Task.sleep(for: .milliseconds(500))
 
@@ -166,6 +211,8 @@ class LoginAutomationEngine {
         var lastEvaluation: EvaluationResult?
 
         for cycle in 1...maxSubmitCycles {
+            logger.log("Phase: SUBMIT CYCLE \(cycle)/\(maxSubmitCycles)", category: .automation, level: .info, sessionId: sessionId)
+            logger.startTimer(key: "\(sessionId)_cycle_\(cycle)")
             advanceTo(.submitting, attempt: attempt, message: "Submit cycle \(cycle)/\(maxSubmitCycles) — checking login button readiness")
 
             if cycle > 1 {
@@ -205,7 +252,10 @@ class LoginAutomationEngine {
             var submitResult: (success: Bool, detail: String) = (false, "")
             var clickVerified = false
             for submitAttempt in 1...4 {
+                logger.startTimer(key: "\(sessionId)_click_\(cycle)_\(submitAttempt)")
                 submitResult = await session.clickLoginButton()
+                let clickMs = logger.stopTimer(key: "\(sessionId)_click_\(cycle)_\(submitAttempt)")
+                logger.log("Click attempt \(submitAttempt)/4: \(submitResult.success ? "sent" : "FAILED") — \(submitResult.detail)", category: .automation, level: submitResult.success ? .trace : .warning, sessionId: sessionId, durationMs: clickMs)
                 if submitResult.success {
                     attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt): \(submitResult.detail)", level: .info))
 
@@ -259,7 +309,10 @@ class LoginAutomationEngine {
             let preSubmitURL = await session.getCurrentURL()
             attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): waiting up to 5s for response...", level: .info))
 
+            logger.startTimer(key: "\(sessionId)_poll_\(cycle)")
             let pollResult = await session.rapidWelcomePoll(timeout: 5, originalURL: preSubmitURL)
+            let pollMs = logger.stopTimer(key: "\(sessionId)_poll_\(cycle)")
+            logger.log("Rapid poll complete: welcome=\(pollResult.welcomeTextFound) redirect=\(pollResult.redirectedToHomepage) nav=\(pollResult.navigationDetected) banner=\(pollResult.errorBannerDetected)", category: .automation, level: .debug, sessionId: sessionId, durationMs: pollMs)
 
             advanceTo(.evaluatingResult, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — evaluating response...")
 
@@ -306,6 +359,7 @@ class LoginAutomationEngine {
                 return .redBannerError
             }
 
+            logger.startTimer(key: "\(sessionId)_eval_\(cycle)")
             let evaluation = evaluateLoginResponse(
                 pageContent: pageContent,
                 currentURL: currentURL,
@@ -316,7 +370,13 @@ class LoginAutomationEngine {
                 navigationDetected: pollResult.navigationDetected,
                 contentChanged: pollResult.anyContentChange
             )
+            let evalMs = logger.stopTimer(key: "\(sessionId)_eval_\(cycle)")
             lastEvaluation = evaluation
+            let cycleMs = logger.stopTimer(key: "\(sessionId)_cycle_\(cycle)")
+            logger.log("Cycle \(cycle) evaluation: \(evaluation.outcome) score=\(evaluation.score) signals=\(evaluation.signals.count) — \(evaluation.reason)", category: .evaluation, level: evaluation.outcome == .success ? .success : .info, sessionId: sessionId, durationMs: cycleMs, metadata: ["score": "\(evaluation.score)", "outcome": "\(evaluation.outcome)", "signalCount": "\(evaluation.signals.count)"])
+            for signal in evaluation.signals {
+                logger.log("  Signal: \(signal)", category: .evaluation, level: .trace, sessionId: sessionId)
+            }
 
             let autoResult: PPSRDebugScreenshot.AutoDetectedResult
             switch evaluation.outcome {
@@ -607,15 +667,20 @@ class LoginAutomationEngine {
         session: LoginSiteWebSession,
         attempt: LoginAttempt,
         fieldName: String,
+        sessionId: String = "",
         fill: () async -> (success: Bool, detail: String)
     ) async -> Bool {
         for attemptNum in 1...3 {
+            logger.startTimer(key: "\(sessionId)_retryfill_\(fieldName)_\(attemptNum)")
             let result = await fill()
+            let ms = logger.stopTimer(key: "\(sessionId)_retryfill_\(fieldName)_\(attemptNum)")
             if result.success {
                 attempt.logs.append(PPSRLogEntry(message: "\(fieldName): \(result.detail)", level: .success))
+                logger.log("\(fieldName) fill attempt \(attemptNum): \(result.detail)", category: .automation, level: .trace, sessionId: sessionId, durationMs: ms)
                 return true
             }
             attempt.logs.append(PPSRLogEntry(message: "\(fieldName) attempt \(attemptNum)/3 FAILED: \(result.detail)", level: .warning))
+            logger.log("\(fieldName) fill attempt \(attemptNum)/3 FAILED: \(result.detail)", category: .automation, level: .warning, sessionId: sessionId, durationMs: ms)
             if attemptNum < 3 {
                 try? await Task.sleep(for: .milliseconds(Double(attemptNum) * 500))
             }
@@ -637,7 +702,11 @@ class LoginAutomationEngine {
     }
 
     private func captureAlwaysScreenshot(session: LoginSiteWebSession, attempt: LoginAttempt, cycle: Int, maxCycles: Int, welcomeTextFound: Bool, redirected: Bool, evaluationReason: String, currentURL: String, autoResult: PPSRDebugScreenshot.AutoDetectedResult) async {
-        guard let img = await session.captureScreenshot() else { return }
+        logger.log("Capturing screenshot cycle \(cycle)/\(maxCycles) autoResult=\(autoResult)", category: .screenshot, level: .trace)
+        guard let img = await session.captureScreenshot() else {
+            logger.log("Screenshot capture FAILED (nil)", category: .screenshot, level: .warning)
+            return
+        }
         attempt.responseSnapshot = img
 
         let compressed: UIImage
