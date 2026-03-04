@@ -1,6 +1,46 @@
 import Foundation
 import Observation
+import SwiftUI
 import WebKit
+
+nonisolated enum SuperTestConnectionType: String, CaseIterable, Sendable, Identifiable {
+    case fingerprint = "Fingerprint"
+    case joeURLs = "Joe URLs"
+    case ignitionURLs = "Ignition URLs"
+    case ppsrConnection = "PPSR"
+    case dnsServers = "DNS Servers"
+    case socks5Proxies = "SOCKS5 Proxies"
+    case openvpnProfiles = "OpenVPN"
+    case wireguardProfiles = "WireGuard"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .fingerprint: "fingerprint"
+        case .joeURLs: "suit.spade.fill"
+        case .ignitionURLs: "flame.fill"
+        case .ppsrConnection: "car.side.fill"
+        case .dnsServers: "lock.shield.fill"
+        case .socks5Proxies: "network"
+        case .openvpnProfiles: "shield.lefthalf.filled"
+        case .wireguardProfiles: "lock.trianglebadge.exclamationmark.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .fingerprint: .purple
+        case .joeURLs: .green
+        case .ignitionURLs: .orange
+        case .ppsrConnection: .cyan
+        case .dnsServers: .blue
+        case .socks5Proxies: .red
+        case .openvpnProfiles: .indigo
+        case .wireguardProfiles: .purple
+        }
+    }
+}
 
 nonisolated enum SuperTestPhase: String, Sendable, CaseIterable, Identifiable {
     case idle = "Idle"
@@ -111,6 +151,8 @@ class SuperTestService {
     var lastReport: SuperTestReport?
     var phaseProgress: [SuperTestPhase: (total: Int, done: Int)] = [:]
 
+    var selectedConnectionTypes: Set<SuperTestConnectionType> = Set(SuperTestConnectionType.allCases)
+
     private var testTask: Task<Void, Never>?
 
     private let urlRotation = LoginURLRotationService.shared
@@ -119,13 +161,28 @@ class SuperTestService {
     private let diagnostics = PPSRConnectionDiagnosticService.shared
 
     var phaseSummary: [(phase: SuperTestPhase, passed: Int, failed: Int)] {
-        let phases: [SuperTestPhase] = [.fingerprint, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles, .wireguardProfiles]
+        let phases = enabledPhases.isEmpty
+            ? [SuperTestPhase.fingerprint, .joeURLs, .ignitionURLs, .ppsrConnection, .dnsServers, .socks5Proxies, .openvpnProfiles, .wireguardProfiles]
+            : enabledPhases
         return phases.map { phase in
             let phaseResults = results.filter { $0.category == phase }
             let passed = phaseResults.filter(\.passed).count
             let failed = phaseResults.filter { !$0.passed }.count
             return (phase, passed, failed)
         }
+    }
+
+    var enabledPhases: [SuperTestPhase] {
+        var phases: [SuperTestPhase] = []
+        if selectedConnectionTypes.contains(.fingerprint) { phases.append(.fingerprint) }
+        if selectedConnectionTypes.contains(.joeURLs) { phases.append(.joeURLs) }
+        if selectedConnectionTypes.contains(.ignitionURLs) { phases.append(.ignitionURLs) }
+        if selectedConnectionTypes.contains(.ppsrConnection) { phases.append(.ppsrConnection) }
+        if selectedConnectionTypes.contains(.dnsServers) { phases.append(.dnsServers) }
+        if selectedConnectionTypes.contains(.socks5Proxies) { phases.append(.socks5Proxies) }
+        if selectedConnectionTypes.contains(.openvpnProfiles) { phases.append(.openvpnProfiles) }
+        if selectedConnectionTypes.contains(.wireguardProfiles) { phases.append(.wireguardProfiles) }
+        return phases
     }
 
     func startSuperTest() {
@@ -139,34 +196,71 @@ class SuperTestService {
         phaseProgress.removeAll()
         currentItem = ""
 
-        addLog("SUPER TEST — Starting comprehensive infrastructure test")
-        logger.startSession("supertest", category: .superTest, message: "SUPER TEST starting comprehensive infrastructure test")
+        let activeTypes = selectedConnectionTypes
+        let typeNames = activeTypes.map(\.rawValue).sorted().joined(separator: ", ")
+        addLog("SUPER TEST — Starting with: \(typeNames)")
+        logger.startSession("supertest", category: .superTest, message: "SUPER TEST starting with: \(typeNames)")
 
         let startTime = Date()
+        let totalPhases = max(activeTypes.count, 1)
 
         testTask = Task {
-            await runFingerprintTest()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            var completed = 0
 
-            await runJoeURLTests()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.fingerprint) {
+                await runFingerprintTest()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runIgnitionURLTests()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.joeURLs) {
+                await runJoeURLTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runPPSRConnectionTest()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.ignitionURLs) {
+                await runIgnitionURLTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runDNSServerTests()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.ppsrConnection) {
+                await runPPSRConnectionTest()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runSOCKS5ProxyTests()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.dnsServers) {
+                await runDNSServerTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runOpenVPNProfileTests()
-            if Task.isCancelled { finalize(startTime: startTime); return }
+            if activeTypes.contains(.socks5Proxies) {
+                await runSOCKS5ProxyTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
 
-            await runWireGuardProfileTests()
+            if activeTypes.contains(.openvpnProfiles) {
+                await runOpenVPNProfileTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+                if Task.isCancelled { finalize(startTime: startTime); return }
+            }
+
+            if activeTypes.contains(.wireguardProfiles) {
+                await runWireGuardProfileTests()
+                completed += 1
+                updateProgress(Double(completed) / Double(totalPhases))
+            }
 
             finalize(startTime: startTime)
         }
@@ -260,7 +354,6 @@ class SuperTestService {
         ))
 
         addLog("Fingerprint: WebView=\(webViewScore), Headless=\(headlessScore), Overall: \(passed ? "PASS" : "FAIL")", level: passed ? .success : .error)
-        updateProgress(0.15)
     }
 
     private func runWebViewFingerprintTest() async -> Int {
@@ -357,7 +450,6 @@ class SuperTestService {
 
         let passed = results.filter { $0.category == .joeURLs && $0.passed }.count
         addLog("Joe URLs: \(passed)/\(total) passed", level: passed > 0 ? .success : .error)
-        updateProgress(0.30)
     }
 
     // MARK: - Ignition URL Tests
@@ -392,7 +484,6 @@ class SuperTestService {
 
         let passed = results.filter { $0.category == .ignitionURLs && $0.passed }.count
         addLog("Ignition URLs: \(passed)/\(total) passed", level: passed > 0 ? .success : .error)
-        updateProgress(0.45)
     }
 
     // MARK: - PPSR Connection Test
@@ -438,7 +529,6 @@ class SuperTestService {
 
         let passed = results.filter { $0.category == .ppsrConnection && $0.passed }.count
         addLog("PPSR: \(passed)/3 checks passed", level: passed == 3 ? .success : (passed > 0 ? .warning : .error))
-        updateProgress(0.55)
     }
 
     // MARK: - DNS Server Tests
@@ -480,7 +570,6 @@ class SuperTestService {
 
         let passedCount = results.filter { $0.category == .dnsServers && $0.passed }.count
         addLog("DNS Servers: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
-        updateProgress(0.70)
     }
 
     // MARK: - SOCKS5 Proxy Tests
@@ -499,7 +588,6 @@ class SuperTestService {
 
         if total == 0 {
             addLog("No SOCKS5 proxies configured — skipping", level: .warning)
-            updateProgress(0.85)
             return
         }
 
@@ -537,7 +625,6 @@ class SuperTestService {
 
         let passedCount = results.filter { $0.category == .socks5Proxies && $0.passed }.count
         addLog("SOCKS5 Proxies: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
-        updateProgress(0.85)
     }
 
     private func processProxyResult(_ result: (ProxyConfig, ProxyRotationService.ProxyTarget, Bool, Int)) {
@@ -583,7 +670,6 @@ class SuperTestService {
 
         if total == 0 {
             addLog("No OpenVPN profiles configured — skipping", level: .warning)
-            updateProgress(0.95)
             return
         }
 
@@ -621,7 +707,6 @@ class SuperTestService {
 
         let passedCount = results.filter { $0.category == .openvpnProfiles && $0.passed }.count
         addLog("OpenVPN: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
-        updateProgress(0.95)
     }
 
     // MARK: - WireGuard Profile Tests
@@ -640,7 +725,6 @@ class SuperTestService {
 
         if total == 0 {
             addLog("No WireGuard profiles configured — skipping", level: .warning)
-            updateProgress(0.98)
             return
         }
 
@@ -680,7 +764,6 @@ class SuperTestService {
 
         let passedCount = results.filter { $0.category == .wireguardProfiles && $0.passed }.count
         addLog("WireGuard: \(passedCount)/\(total) passed", level: passedCount > 0 ? .success : .error)
-        updateProgress(0.98)
     }
 
     // MARK: - Utility Methods

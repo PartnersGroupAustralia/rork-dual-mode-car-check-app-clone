@@ -5,6 +5,7 @@ struct SuperTestView: View {
     @State private var showReport: Bool = false
     @State private var selectedPhase: SuperTestPhase?
     @State private var showLogs: Bool = false
+    @State private var showConnectionPicker: Bool = false
 
     var body: some View {
         ScrollView {
@@ -100,6 +101,8 @@ struct SuperTestView: View {
                         .clipShape(.rect(cornerRadius: 12))
                 }
             } else {
+                connectionTypeSelector
+
                 Button {
                     service.startSuperTest()
                 } label: {
@@ -108,12 +111,17 @@ struct SuperTestView: View {
                             .font(.subheadline)
                         Text("Run Super Test")
                             .font(.subheadline.bold())
+                        if service.selectedConnectionTypes.count < SuperTestConnectionType.allCases.count {
+                            Text("(\(service.selectedConnectionTypes.count)/\(SuperTestConnectionType.allCases.count))")
+                                .font(.caption2)
+                                .opacity(0.8)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
                     .background(
                         LinearGradient(
-                            colors: [.purple, .blue],
+                            colors: service.selectedConnectionTypes.isEmpty ? [.gray, .gray] : [.purple, .blue],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
@@ -121,12 +129,127 @@ struct SuperTestView: View {
                     .foregroundStyle(.white)
                     .clipShape(.rect(cornerRadius: 14))
                 }
+                .disabled(service.selectedConnectionTypes.isEmpty)
                 .sensoryFeedback(.impact(weight: .heavy), trigger: service.isRunning)
             }
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 16))
+    }
+
+    // MARK: - Connection Type Selector
+
+    private var connectionTypeSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.spring(duration: 0.3)) {
+                    showConnectionPicker.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                    Text("Test Phases")
+                        .font(.caption.bold())
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("\(service.selectedConnectionTypes.count)/\(SuperTestConnectionType.allCases.count)")
+                        .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: showConnectionPicker ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showConnectionPicker {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Button {
+                            withAnimation(.spring(duration: 0.2)) {
+                                service.selectedConnectionTypes = Set(SuperTestConnectionType.allCases)
+                            }
+                        } label: {
+                            Text("All")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(service.selectedConnectionTypes.count == SuperTestConnectionType.allCases.count ? Color.blue.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                .foregroundStyle(service.selectedConnectionTypes.count == SuperTestConnectionType.allCases.count ? .blue : .secondary)
+                                .clipShape(Capsule())
+                        }
+
+                        Button {
+                            withAnimation(.spring(duration: 0.2)) {
+                                service.selectedConnectionTypes.removeAll()
+                            }
+                        } label: {
+                            Text("None")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(service.selectedConnectionTypes.isEmpty ? Color.red.opacity(0.15) : Color(.tertiarySystemGroupedBackground))
+                                .foregroundStyle(service.selectedConnectionTypes.isEmpty ? .red : .secondary)
+                                .clipShape(Capsule())
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.bottom, 8)
+
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                        ForEach(SuperTestConnectionType.allCases) { type in
+                            connectionTypeToggle(type)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(12)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(.rect(cornerRadius: 12))
+    }
+
+    private func connectionTypeToggle(_ type: SuperTestConnectionType) -> some View {
+        let isSelected = service.selectedConnectionTypes.contains(type)
+        return Button {
+            withAnimation(.spring(duration: 0.2)) {
+                if isSelected {
+                    service.selectedConnectionTypes.remove(type)
+                } else {
+                    service.selectedConnectionTypes.insert(type)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: type.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isSelected ? type.color : .secondary)
+                    .frame(width: 16)
+                Text(type.rawValue)
+                    .font(.system(.caption2, weight: .semibold))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(isSelected ? type.color : Color(.tertiaryLabel))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isSelected ? type.color.opacity(0.1) : Color(.secondarySystemGroupedBackground))
+            .clipShape(.rect(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? type.color.opacity(0.3) : .clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .sensoryFeedback(.selection, trigger: isSelected)
     }
 
     // MARK: - Live Progress
