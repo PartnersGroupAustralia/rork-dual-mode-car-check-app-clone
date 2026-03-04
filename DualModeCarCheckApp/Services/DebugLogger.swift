@@ -137,15 +137,11 @@ nonisolated struct DebugLogEntry: Identifiable, Sendable, Codable {
     }
 
     var formattedTime: String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f.string(from: timestamp)
+        DateFormatters.timeWithMillis.string(from: timestamp)
     }
 
     var fullTimestamp: String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return f.string(from: timestamp)
+        DateFormatters.fullTimestamp.string(from: timestamp)
     }
 
     var compactLine: String {

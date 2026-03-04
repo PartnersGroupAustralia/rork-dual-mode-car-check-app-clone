@@ -22,15 +22,10 @@ nonisolated struct LoginTestResult: Identifiable, Sendable {
     }
 
     var formattedDate: String {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f.string(from: timestamp)
+        DateFormatters.mediumDateTime.string(from: timestamp)
     }
 
     var formattedTime: String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f.string(from: timestamp)
+        DateFormatters.timeOnly.string(from: timestamp)
     }
 }

@@ -73,9 +73,7 @@ class AppDataExportService {
 
         var config = ExportableConfig()
 
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        config.exportedAt = f.string(from: Date())
+        config.exportedAt = DateFormatters.exportTimestamp.string(from: Date())
 
         config.joeURLs = urlService.joeURLs.map { .init(url: $0.urlString, enabled: $0.isEnabled) }
         config.ignitionURLs = urlService.ignitionURLs.map { .init(url: $0.urlString, enabled: $0.isEnabled) }
@@ -266,12 +264,10 @@ class AppDataExportService {
     }
 
     private func exportHeader() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return """
         ========================================
         APP STATE EXPORT
-        Generated: \(f.string(from: Date()))
+        Generated: \(DateFormatters.exportTimestamp.string(from: Date()))
         ========================================
         """
     }
@@ -381,10 +377,8 @@ class AppDataExportService {
     }
 
     func exportTestingHistory(credentials: [LoginCredential]) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         var lines: [String] = ["--- TESTING HISTORY ---"]
-        lines.append("Generated: \(f.string(from: Date()))")
+        lines.append("Generated: \(DateFormatters.exportTimestamp.string(from: Date()))")
         lines.append("Total Credentials: \(credentials.count)")
         lines.append("")
 
@@ -393,7 +387,7 @@ class AppDataExportService {
             for result in cred.testResults {
                 let icon = result.success ? "✓" : "✗"
                 let detail = result.responseDetail ?? result.errorMessage ?? ""
-                lines.append("  \(icon) \(f.string(from: result.timestamp)) | \(result.formattedDuration) | \(detail)")
+                lines.append("  \(icon) \(DateFormatters.exportTimestamp.string(from: result.timestamp)) | \(result.formattedDuration) | \(detail)")
             }
             if !cred.testResults.isEmpty { lines.append("") }
         }

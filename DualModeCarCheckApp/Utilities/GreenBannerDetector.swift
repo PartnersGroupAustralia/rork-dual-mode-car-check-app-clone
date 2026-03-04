@@ -1,7 +1,7 @@
 import UIKit
 
-struct GreenBannerDetector {
-    struct DetectionResult {
+nonisolated struct GreenBannerDetector: Sendable {
+    nonisolated struct DetectionResult: Sendable {
         let detected: Bool
         let confidence: Double
         let bannerRect: CGRect?

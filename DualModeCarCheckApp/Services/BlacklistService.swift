@@ -127,9 +127,6 @@ struct BlacklistEntry: Identifiable {
     }
 
     var formattedDate: String {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f.string(from: addedAt)
+        DateFormatters.mediumDateTime.string(from: addedAt)
     }
 }

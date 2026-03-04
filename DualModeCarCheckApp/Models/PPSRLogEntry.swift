@@ -21,8 +21,6 @@ nonisolated struct PPSRLogEntry: Identifiable, Sendable {
     }
 
     var formattedTime: String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f.string(from: timestamp)
+        DateFormatters.timeWithMillis.string(from: timestamp)
     }
 }

@@ -91,6 +91,9 @@ class PPSRAutomationViewModel {
     init() {
         engine.onScreenshot = { [weak self] screenshot in
             self?.debugScreenshots.insert(screenshot, at: 0)
+            if let count = self?.debugScreenshots.count, count > 500 {
+                self?.debugScreenshots = Array(self!.debugScreenshots.prefix(500))
+            }
         }
         engine.onConnectionFailure = { [weak self] detail in
             self?.notifications.sendConnectionFailure(detail: detail)
@@ -645,6 +648,9 @@ class PPSRAutomationViewModel {
 
     func log(_ message: String, level: PPSRLogEntry.Level = .info) {
         globalLogs.insert(PPSRLogEntry(message: message, level: level), at: 0)
+        if globalLogs.count > 2000 {
+            globalLogs = Array(globalLogs.prefix(2000))
+        }
         let debugLevel: DebugLogLevel
         switch level {
         case .info: debugLevel = .info
