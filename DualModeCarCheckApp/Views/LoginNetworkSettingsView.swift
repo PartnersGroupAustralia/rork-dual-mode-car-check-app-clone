@@ -53,7 +53,7 @@ struct LoginNetworkSettingsView: View {
         .sheet(isPresented: $showDNSManager) { loginDNSManagerSheet }
         .sheet(isPresented: $showJoeProxyImport) { targetProxyImportSheet(target: .joe) }
         .sheet(isPresented: $showIgnitionTargetProxyImport) { targetProxyImportSheet(target: .ignition) }
-        .fileImporter(isPresented: $showVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showVPNFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
                 var imported = 0
@@ -78,7 +78,7 @@ struct LoginNetworkSettingsView: View {
                 vm.log("VPN import error: \(error.localizedDescription)", level: .error)
             }
         }
-        .fileImporter(isPresented: $showWGFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showWGFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
                 var parsed: [WireGuardConfig] = []
@@ -452,6 +452,24 @@ struct LoginNetworkSettingsView: View {
                 }
 
                 if !vpnList.isEmpty {
+                    Button {
+                        guard !isTestingVPNConfigs else { return }
+                        isTestingVPNConfigs = true
+                        Task {
+                            vm.log("Testing \(vpnList.count) \(title) OpenVPN configs...")
+                            await vm.proxyService.testAllVPNConfigs(target: target)
+                            let reachable = vm.proxyService.vpnConfigs(for: target).filter(\.isReachable).count
+                            vm.log("\(title) OpenVPN test: \(reachable)/\(vpnList.count) reachable", level: .success)
+                            isTestingVPNConfigs = false
+                        }
+                    } label: {
+                        HStack {
+                            Label("Test All OpenVPN", systemImage: "antenna.radiowaves.left.and.right")
+                            if isTestingVPNConfigs { Spacer(); ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(isTestingVPNConfigs)
+
                     ForEach(vpnList) { vpn in
                         HStack(spacing: 8) {
                             Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
@@ -470,6 +488,11 @@ struct LoginNetworkSettingsView: View {
                                     Text(vpn.statusLabel)
                                         .font(.system(.caption2, design: .monospaced, weight: .bold))
                                         .foregroundStyle(vpn.isReachable ? .green : (vpn.lastTested != nil ? .red : .gray))
+                                    if let latency = vpn.lastLatencyMs {
+                                        Text("\(latency)ms")
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
                             }
                             Spacer()
@@ -479,6 +502,16 @@ struct LoginNetworkSettingsView: View {
                                 vm.proxyService.removeVPNConfig(vpn, target: target)
                                 vm.log("Removed VPN: \(vpn.fileName)")
                             } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+
+                    let unreachableCount = vpnList.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                    if unreachableCount > 0 {
+                        Button(role: .destructive) {
+                            vm.proxyService.removeUnreachableVPNConfigs(target: target)
+                            vm.log("Removed \(unreachableCount) unreachable \(title) OpenVPN configs")
+                        } label: {
+                            Label("Remove \(unreachableCount) Unreachable", systemImage: "xmark.circle")
                         }
                     }
 
@@ -516,6 +549,17 @@ struct LoginNetworkSettingsView: View {
                 }
 
                 if !wgList.isEmpty {
+                    Button {
+                        vm.log("Testing \(wgList.count) \(title) WireGuard configs...")
+                        Task {
+                            await vm.proxyService.testAllWGConfigs(target: target)
+                            let reachable = vm.proxyService.wgConfigs(for: target).filter(\.isReachable).count
+                            vm.log("\(title) WireGuard test: \(reachable)/\(wgList.count) reachable", level: .success)
+                        }
+                    } label: {
+                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+
                     ForEach(wgList) { wg in
                         HStack(spacing: 8) {
                             Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
@@ -544,10 +588,14 @@ struct LoginNetworkSettingsView: View {
                         }
                     }
 
-                    Button {
-                        Task { await vm.proxyService.testAllWGConfigs(target: target) }
-                    } label: {
-                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
+                    let unreachableWGCount = wgList.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                    if unreachableWGCount > 0 {
+                        Button(role: .destructive) {
+                            vm.proxyService.removeUnreachableWGConfigs(target: target)
+                            vm.log("Removed \(unreachableWGCount) unreachable \(title) WireGuard configs")
+                        } label: {
+                            Label("Remove \(unreachableWGCount) Unreachable", systemImage: "xmark.circle")
+                        }
                     }
 
                     Button(role: .destructive) {
@@ -602,6 +650,9 @@ struct LoginNetworkSettingsView: View {
 
     // MARK: - NordVPN
 
+    @State private var isDownloadingNordOVPN: Bool = false
+    @State private var nordOVPNDownloadTarget: ProxyRotationService.ProxyTarget = .joe
+
     private var nordVPNSection: some View {
         Section {
             HStack(spacing: 10) {
@@ -643,16 +694,40 @@ struct LoginNetworkSettingsView: View {
                 }
 
                 Button {
-                    Task { await nordService.fetchRecommendedServers(limit: 10) }
+                    Task { await nordService.fetchRecommendedServers(limit: 10, technology: "openvpn_tcp") }
                 } label: {
                     HStack {
                         if nordService.isLoadingServers { ProgressView().controlSize(.small) }
-                        Label("Fetch Recommended Servers", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Fetch TCP Servers", systemImage: "arrow.triangle.2.circlepath")
                     }
                 }
                 .disabled(nordService.isLoadingServers)
 
                 if !nordService.recommendedServers.isEmpty {
+                    Menu {
+                        Button {
+                            downloadNordOVPN(target: .joe)
+                        } label: { Label("Download All TCP → Joe", systemImage: "suit.spade.fill") }
+                        Button {
+                            downloadNordOVPN(target: .ignition)
+                        } label: { Label("Download All TCP → Ignition", systemImage: "flame.fill") }
+                    } label: {
+                        HStack(spacing: 10) {
+                            if nordService.isDownloadingOVPN {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.down.doc.fill").foregroundStyle(.indigo)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Download All TCP .ovpn Files").font(.subheadline.bold())
+                                Text(nordService.isDownloadingOVPN ? "Downloading \(nordService.ovpnDownloadProgress)..." : "\(nordService.recommendedServers.count) servers available")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(nordService.isDownloadingOVPN)
+
                     ForEach(nordService.recommendedServers, id: \.id) { server in
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -669,23 +744,44 @@ struct LoginNetworkSettingsView: View {
                                 }
                             }
                             Spacer()
-                            if nordService.hasPrivateKey && server.publicKey != nil {
-                                Menu {
+                            Menu {
+                                Button {
+                                    Task {
+                                        if let config = await nordService.downloadOVPNConfig(from: server, proto: .tcp) {
+                                            vm.proxyService.importVPNConfig(config, for: .joe)
+                                            vm.log("Imported TCP .ovpn [Joe]: \(server.hostname)", level: .success)
+                                        } else {
+                                            vm.log("Failed to download .ovpn: \(server.hostname)", level: .error)
+                                        }
+                                    }
+                                } label: { Label("TCP → Joe", systemImage: "suit.spade.fill") }
+                                Button {
+                                    Task {
+                                        if let config = await nordService.downloadOVPNConfig(from: server, proto: .tcp) {
+                                            vm.proxyService.importVPNConfig(config, for: .ignition)
+                                            vm.log("Imported TCP .ovpn [Ignition]: \(server.hostname)", level: .success)
+                                        } else {
+                                            vm.log("Failed to download .ovpn: \(server.hostname)", level: .error)
+                                        }
+                                    }
+                                } label: { Label("TCP → Ignition", systemImage: "flame.fill") }
+                                if nordService.hasPrivateKey, let _ = server.publicKey {
+                                    Divider()
                                     Button {
                                         if let wg = nordService.generateWireGuardConfig(from: server) {
                                             vm.proxyService.importWGConfig(wg, for: .joe)
                                             vm.log("Imported WG [Joe]: \(server.hostname)", level: .success)
                                         }
-                                    } label: { Label("Add to Joe", systemImage: "suit.spade.fill") }
+                                    } label: { Label("WG → Joe", systemImage: "lock.fill") }
                                     Button {
                                         if let wg = nordService.generateWireGuardConfig(from: server) {
                                             vm.proxyService.importWGConfig(wg, for: .ignition)
                                             vm.log("Imported WG [Ignition]: \(server.hostname)", level: .success)
                                         }
-                                    } label: { Label("Add to Ignition", systemImage: "flame.fill") }
-                                } label: {
-                                    Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
+                                    } label: { Label("WG → Ignition", systemImage: "lock.fill") }
                                 }
+                            } label: {
+                                Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
                             }
                         }
                     }
@@ -706,7 +802,16 @@ struct LoginNetworkSettingsView: View {
         } header: {
             Text("NordVPN")
         } footer: {
-            Text("Configure NordVPN access key to auto-generate WireGuard and OpenVPN configs from recommended servers.")
+            Text("Fetches recommended TCP OpenVPN servers from NordVPN and downloads real .ovpn config files for import.")
+        }
+    }
+
+    private func downloadNordOVPN(target: ProxyRotationService.ProxyTarget) {
+        guard !nordService.isDownloadingOVPN else { return }
+        Task {
+            let result = await nordService.downloadAllTCPConfigs(for: nordService.recommendedServers, target: target)
+            let targetName = target == .joe ? "Joe" : "Ignition"
+            vm.log("NordVPN TCP: \(result.imported) imported, \(result.failed) failed → \(targetName)", level: result.imported > 0 ? .success : .error)
         }
     }
 

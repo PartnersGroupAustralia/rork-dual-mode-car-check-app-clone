@@ -14,12 +14,28 @@ nonisolated struct NordVPNServer: Codable, Sendable {
             .metadata?.first?.value
     }
 
+    var hasOpenVPNTCP: Bool {
+        technologies?.contains(where: { $0.identifier == "openvpn_tcp" }) ?? false
+    }
+
+    var hasOpenVPNUDP: Bool {
+        technologies?.contains(where: { $0.identifier == "openvpn_udp" }) ?? false
+    }
+
     var city: String? {
         locations?.first?.country?.city?.name
     }
 
     var country: String? {
         locations?.first?.country?.name
+    }
+
+    var tcpOVPNDownloadURL: URL? {
+        URL(string: "https://downloads.nordcdn.com/configs/files/ovpn_tcp/servers/\(hostname).tcp.ovpn")
+    }
+
+    var udpOVPNDownloadURL: URL? {
+        URL(string: "https://downloads.nordcdn.com/configs/files/ovpn_udp/servers/\(hostname).udp.ovpn")
     }
 }
 
@@ -127,7 +143,10 @@ class NordVPNService {
         }
     }
 
-    func fetchRecommendedServers(country: String? = nil, limit: Int = 10, technology: String = "wireguard_udp") async {
+    var isDownloadingOVPN: Bool = false
+    var ovpnDownloadProgress: String = ""
+
+    func fetchRecommendedServers(country: String? = nil, limit: Int = 10, technology: String = "openvpn_tcp") async {
         isLoadingServers = true
         lastError = nil
         defer { isLoadingServers = false }
@@ -166,6 +185,71 @@ class NordVPNService {
         }
     }
 
+    func downloadOVPNConfig(from server: NordVPNServer, proto: NordOVPNProto = .tcp) async -> OpenVPNConfig? {
+        let downloadURL: URL?
+        switch proto {
+        case .tcp: downloadURL = server.tcpOVPNDownloadURL
+        case .udp: downloadURL = server.udpOVPNDownloadURL
+        }
+
+        guard let url = downloadURL else { return nil }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                return nil
+            }
+            guard let content = String(data: data, encoding: .utf8), !content.isEmpty else { return nil }
+            let fileName = "\(server.hostname).\(proto == .tcp ? "tcp" : "udp").ovpn"
+            return OpenVPNConfig.parse(fileName: fileName, content: content)
+        } catch {
+            return nil
+        }
+    }
+
+    func downloadAllTCPConfigs(for servers: [NordVPNServer], target: ProxyRotationService.ProxyTarget) async -> (imported: Int, failed: Int) {
+        isDownloadingOVPN = true
+        ovpnDownloadProgress = "0/\(servers.count)"
+        defer {
+            isDownloadingOVPN = false
+            ovpnDownloadProgress = ""
+        }
+
+        let proxyService = ProxyRotationService.shared
+        var imported = 0
+        var failed = 0
+
+        for (index, server) in servers.enumerated() {
+            ovpnDownloadProgress = "\(index + 1)/\(servers.count)"
+            if let config = await downloadOVPNConfig(from: server, proto: .tcp) {
+                proxyService.importVPNConfig(config, for: target)
+                imported += 1
+            } else {
+                failed += 1
+            }
+        }
+
+        return (imported, failed)
+    }
+
+    func fetchAndDownloadTCPServers(country: String? = nil, limit: Int = 10, target: ProxyRotationService.ProxyTarget) async -> (imported: Int, failed: Int) {
+        await fetchRecommendedServers(country: country, limit: limit, technology: "openvpn_tcp")
+        guard !recommendedServers.isEmpty else {
+            return (0, 0)
+        }
+        return await downloadAllTCPConfigs(for: recommendedServers, target: target)
+    }
+
     func generateWireGuardConfig(from server: NordVPNServer) -> WireGuardConfig? {
         guard let publicKey = server.publicKey, !publicKey.isEmpty else { return nil }
         guard hasPrivateKey else { return nil }
@@ -199,7 +283,7 @@ class NordVPNService {
         )
     }
 
-    func generateOpenVPNEndpoint(from server: NordVPNServer, proto: String = "udp", port: Int = 1194) -> OpenVPNConfig {
+    func generateOpenVPNEndpoint(from server: NordVPNServer, proto: String = "tcp", port: Int = 443) -> OpenVPNConfig {
         let rawContent = """
         client
         dev tun
@@ -223,4 +307,9 @@ class NordVPNService {
             rawContent: rawContent
         )
     }
+}
+
+nonisolated enum NordOVPNProto: String, Sendable {
+    case tcp
+    case udp
 }

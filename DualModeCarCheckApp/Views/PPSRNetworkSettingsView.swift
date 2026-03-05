@@ -26,7 +26,7 @@ struct PPSRNetworkSettingsView: View {
         .navigationTitle("Networks")
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
         .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
-        .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
                 var imported = 0
@@ -51,7 +51,7 @@ struct PPSRNetworkSettingsView: View {
                 vm.log("VPN import error: \(error.localizedDescription)", level: .error)
             }
         }
-        .fileImporter(isPresented: $showPPSRWGFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showPPSRWGFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
                 var parsed: [WireGuardConfig] = []
@@ -399,16 +399,39 @@ struct PPSRNetworkSettingsView: View {
                 }
 
                 Button {
-                    Task { await nordService.fetchRecommendedServers(limit: 10) }
+                    Task { await nordService.fetchRecommendedServers(limit: 10, technology: "openvpn_tcp") }
                 } label: {
                     HStack {
                         if nordService.isLoadingServers { ProgressView().controlSize(.small) }
-                        Label("Fetch Recommended Servers", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Fetch TCP Servers", systemImage: "arrow.triangle.2.circlepath")
                     }
                 }
                 .disabled(nordService.isLoadingServers)
 
                 if !nordService.recommendedServers.isEmpty {
+                    Button {
+                        guard !nordService.isDownloadingOVPN else { return }
+                        Task {
+                            let result = await nordService.downloadAllTCPConfigs(for: nordService.recommendedServers, target: .ppsr)
+                            vm.log("NordVPN TCP: \(result.imported) imported, \(result.failed) failed \u{2192} PPSR", level: result.imported > 0 ? .success : .error)
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            if nordService.isDownloadingOVPN {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.down.doc.fill").foregroundStyle(.indigo)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Download All TCP .ovpn \u{2192} PPSR").font(.subheadline.bold())
+                                Text(nordService.isDownloadingOVPN ? "Downloading \(nordService.ovpnDownloadProgress)..." : "\(nordService.recommendedServers.count) servers available")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(nordService.isDownloadingOVPN)
+
                     ForEach(nordService.recommendedServers, id: \.id) { server in
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 1) {
@@ -425,15 +448,28 @@ struct PPSRNetworkSettingsView: View {
                                 }
                             }
                             Spacer()
-                            if nordService.hasPrivateKey && server.publicKey != nil {
+                            Menu {
                                 Button {
-                                    if let wgConfig = nordService.generateWireGuardConfig(from: server) {
-                                        proxyService.importWGConfig(wgConfig, for: .ppsr)
-                                        vm.log("Imported WG: \(server.hostname)", level: .success)
+                                    Task {
+                                        if let config = await nordService.downloadOVPNConfig(from: server, proto: .tcp) {
+                                            proxyService.importVPNConfig(config, for: .ppsr)
+                                            vm.log("Imported TCP .ovpn [PPSR]: \(server.hostname)", level: .success)
+                                        } else {
+                                            vm.log("Failed to download .ovpn: \(server.hostname)", level: .error)
+                                        }
                                     }
-                                } label: {
-                                    Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
+                                } label: { Label("TCP .ovpn \u{2192} PPSR", systemImage: "shield.lefthalf.filled") }
+                                if nordService.hasPrivateKey, let _ = server.publicKey {
+                                    Divider()
+                                    Button {
+                                        if let wgConfig = nordService.generateWireGuardConfig(from: server) {
+                                            proxyService.importWGConfig(wgConfig, for: .ppsr)
+                                            vm.log("Imported WG [PPSR]: \(server.hostname)", level: .success)
+                                        }
+                                    } label: { Label("WG \u{2192} PPSR", systemImage: "lock.fill") }
                                 }
+                            } label: {
+                                Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
                             }
                         }
                     }
@@ -477,7 +513,7 @@ struct PPSRNetworkSettingsView: View {
         } header: {
             Text("NordVPN")
         } footer: {
-            Text("Configure NordVPN access key to auto-generate WireGuard and OpenVPN configs from recommended servers.")
+            Text("Fetches recommended TCP OpenVPN servers from NordVPN and downloads real .ovpn config files for import.")
         }
     }
 

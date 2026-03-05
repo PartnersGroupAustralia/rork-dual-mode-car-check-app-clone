@@ -879,6 +879,24 @@ class ProxyRotationService {
         persistVPNConfigs(for: target)
     }
 
+    func removeUnreachableVPNConfigs(target: ProxyTarget) {
+        switch target {
+        case .joe: joeVPNConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        case .ignition: ignitionVPNConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        case .ppsr: ppsrVPNConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        }
+        persistVPNConfigs(for: target)
+    }
+
+    func removeUnreachableWGConfigs(target: ProxyTarget) {
+        switch target {
+        case .joe: joeWGConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        case .ignition: ignitionWGConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        case .ppsr: ppsrWGConfigs.removeAll { !$0.isReachable && $0.lastTested != nil }
+        }
+        persistWGConfigs(for: target)
+    }
+
     private func persistVPNConfigs(for target: ProxyTarget) {
         let key: String
         let configs: [OpenVPNConfig]
