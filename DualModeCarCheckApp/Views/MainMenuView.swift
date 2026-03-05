@@ -56,6 +56,25 @@ struct MainMenuView: View {
                         .buttonStyle(.plain)
                         .padding(.leading, 16)
 
+                        Button {
+                            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                                activeMode = .flowRecorder
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "record.circle")
+                                    .font(.system(size: 9, weight: .semibold))
+                                Text("RECORD FLOW")
+                                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                            }
+                            .foregroundStyle(.white.opacity(0.35))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(.red.opacity(0.12))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+
                         Spacer()
 
                         Text("v10.0")
@@ -317,4 +336,5 @@ nonisolated enum ActiveAppMode: String, Sendable {
     case ppsr
     case superTest
     case debugLog
+    case flowRecorder
 }

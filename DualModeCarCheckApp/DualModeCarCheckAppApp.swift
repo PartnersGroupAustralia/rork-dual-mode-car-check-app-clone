@@ -34,6 +34,12 @@ struct DualModeCarCheckAppApp: App {
                             }
                             .overlay(alignment: .bottomLeading) { MainMenuButton() }
                             .preferredColorScheme(.dark)
+                        case .flowRecorder:
+                            NavigationStack {
+                                FlowRecorderView()
+                            }
+                            .overlay(alignment: .bottomLeading) { MainMenuButton() }
+                            .preferredColorScheme(.dark)
                         }
                     }
                     .transition(.asymmetric(
