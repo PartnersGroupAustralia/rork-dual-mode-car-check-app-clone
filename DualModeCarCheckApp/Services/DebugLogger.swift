@@ -185,6 +185,9 @@ class DebugLogger {
     private(set) var retryTracker: [String: RetryState] = [:]
     private let criticalLogKey = "debug_critical_logs_v1"
 
+    private var pendingEntries: [DebugLogEntry] = []
+    private var flushTask: Task<Void, Never>?
+
     struct ErrorHealingEvent: Identifiable {
         let id: UUID = UUID()
         let timestamp: Date
@@ -269,13 +272,34 @@ class DebugLogger {
             metadata: metadata
         )
 
-        entries.insert(entry, at: 0)
+        pendingEntries.append(entry)
 
-        if entries.count > maxEntries {
-            entries = Array(entries.prefix(maxEntries))
+        if level >= .error {
+            flushPendingEntries()
+        } else {
+            scheduleFlush()
         }
+    }
 
-        if level >= .critical {
+    private func scheduleFlush() {
+        guard flushTask == nil else { return }
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            self?.flushPendingEntries()
+        }
+    }
+
+    private func flushPendingEntries() {
+        flushTask?.cancel()
+        flushTask = nil
+        guard !pendingEntries.isEmpty else { return }
+        let batch = pendingEntries
+        pendingEntries.removeAll()
+        entries.insert(contentsOf: batch.reversed(), at: 0)
+        if entries.count > maxEntries {
+            entries.removeLast(entries.count - maxEntries)
+        }
+        if batch.contains(where: { $0.level >= .critical }) {
             persistCriticalEntries()
         }
     }

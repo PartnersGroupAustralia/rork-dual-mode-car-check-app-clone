@@ -5,7 +5,7 @@ struct LoginDashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            LazyVStack(spacing: 20) {
                 statusHeader
                 if vm.connectionStatus == .error || vm.diagnosticReport != nil {
                     connectionDiagnosticsCard
@@ -19,7 +19,7 @@ struct LoginDashboardView: View {
                 }
                 statsRow
                 if !vm.untestedCards.isEmpty {
-                    cardSection(title: "Queued — Untested", cards: vm.untestedCards, color: .secondary, icon: "clock.fill")
+                    cardSection(title: "Queued — Untested", cards: Array(vm.untestedCards.prefix(50)), color: .secondary, icon: "clock.fill")
                 }
                 if !vm.testingCards.isEmpty {
                     cardSection(title: "Testing Now", cards: vm.testingCards, color: .teal, icon: "arrow.triangle.2.circlepath")

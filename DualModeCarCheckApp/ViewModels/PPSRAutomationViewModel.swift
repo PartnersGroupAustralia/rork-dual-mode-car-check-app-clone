@@ -87,6 +87,8 @@ class PPSRAutomationViewModel {
     private let diagnostics = PPSRConnectionDiagnosticService.shared
     private let logger = DebugLogger.shared
     private var batchTask: Task<Void, Never>?
+    private var settingsSaveTask: Task<Void, Never>?
+    private var cardsSaveTask: Task<Void, Never>?
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
@@ -135,20 +137,36 @@ class PPSRAutomationViewModel {
     }
 
     func persistCards() {
+        cardsSaveTask?.cancel()
+        cardsSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            persistence.saveCards(cards)
+        }
+    }
+
+    func persistCardsNow() {
+        cardsSaveTask?.cancel()
+        cardsSaveTask = nil
         persistence.saveCards(cards)
     }
 
     func persistSettings() {
-        persistence.saveSettings(
-            email: testEmail,
-            maxConcurrency: maxConcurrency,
-            debugMode: debugMode,
-            appearanceMode: appearanceMode.rawValue,
-            useEmailRotation: useEmailRotation,
-            stealthEnabled: stealthEnabled,
-            retrySubmitOnFail: retrySubmitOnFail,
-            screenshotCropRect: screenshotCropRect
-        )
+        settingsSaveTask?.cancel()
+        settingsSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            persistence.saveSettings(
+                email: testEmail,
+                maxConcurrency: maxConcurrency,
+                debugMode: debugMode,
+                appearanceMode: appearanceMode.rawValue,
+                useEmailRotation: useEmailRotation,
+                stealthEnabled: stealthEnabled,
+                retrySubmitOnFail: retrySubmitOnFail,
+                screenshotCropRect: screenshotCropRect
+            )
+        }
     }
 
     func syncFromiCloud() {
@@ -646,10 +664,15 @@ class PPSRAutomationViewModel {
         return debugScreenshots.filter { ids.contains($0.id) }
     }
 
+    private var pendingLogs: [PPSRLogEntry] = []
+    private var logFlushTask: Task<Void, Never>?
+
     func log(_ message: String, level: PPSRLogEntry.Level = .info) {
-        globalLogs.insert(PPSRLogEntry(message: message, level: level), at: 0)
-        if globalLogs.count > 2000 {
-            globalLogs = Array(globalLogs.prefix(2000))
+        pendingLogs.append(PPSRLogEntry(message: message, level: level))
+        if level == .error || pendingLogs.count >= 10 {
+            flushLogs()
+        } else {
+            scheduleLogFlush()
         }
         let debugLevel: DebugLogLevel
         switch level {
@@ -659,5 +682,25 @@ class PPSRAutomationViewModel {
         case .error: debugLevel = .error
         }
         logger.log(message, category: .ppsr, level: debugLevel)
+    }
+
+    private func scheduleLogFlush() {
+        guard logFlushTask == nil else { return }
+        logFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            self?.flushLogs()
+        }
+    }
+
+    private func flushLogs() {
+        logFlushTask?.cancel()
+        logFlushTask = nil
+        guard !pendingLogs.isEmpty else { return }
+        let batch = pendingLogs
+        pendingLogs.removeAll()
+        globalLogs.insert(contentsOf: batch.reversed(), at: 0)
+        if globalLogs.count > 2000 {
+            globalLogs.removeLast(globalLogs.count - 2000)
+        }
     }
 }

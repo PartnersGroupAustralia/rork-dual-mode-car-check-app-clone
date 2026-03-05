@@ -10,6 +10,10 @@ struct LoginContentView: View {
         vm.isIgnitionMode ? .orange : .green
     }
 
+    private var loginSettingsHash: String {
+        "\(vm.appearanceMode.rawValue)-\(vm.debugMode)-\(vm.maxConcurrency)-\(vm.stealthEnabled)-\(vm.targetSite.rawValue)"
+    }
+
     var body: some View {
         TabView {
             Tab("Dashboard", systemImage: vm.isIgnitionMode ? "flame.fill" : "bolt.shield.fill") {
@@ -67,19 +71,7 @@ struct LoginContentView: View {
         .onChange(of: vm.credentials.count) { _, _ in
             vm.persistCredentials()
         }
-        .onChange(of: vm.appearanceMode) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.debugMode) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.maxConcurrency) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.stealthEnabled) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.targetSite) { _, _ in
+        .onChange(of: loginSettingsHash) { _, _ in
             vm.persistSettings()
         }
         .onChange(of: vm.isRunning) { _, newValue in
@@ -115,7 +107,7 @@ struct LoginDashboardContentView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            LazyVStack(spacing: 20) {
                 statusHeader
                 dashboardActionButtons
                 if vm.isRunning {
@@ -127,7 +119,7 @@ struct LoginDashboardContentView: View {
                 }
                 statsRow
                 if !vm.untestedCredentials.isEmpty {
-                    credentialSection(title: "Queued — Untested", creds: vm.untestedCredentials, color: .secondary, icon: "clock.fill")
+                    credentialSection(title: "Queued — Untested", creds: Array(vm.untestedCredentials.prefix(50)), color: .secondary, icon: "clock.fill")
                 }
                 if !vm.testingCredentials.isEmpty {
                     credentialSection(title: "Testing Now", creds: vm.testingCredentials, color: .green, icon: "arrow.triangle.2.circlepath")

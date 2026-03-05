@@ -112,6 +112,8 @@ class LoginViewModel {
     private let logger = DebugLogger.shared
     private var batchTask: Task<Void, Never>?
     private var secondaryBatchTask: Task<Void, Never>?
+    private var settingsSaveTask: Task<Void, Never>?
+    private var credentialsSaveTask: Task<Void, Never>?
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
@@ -186,18 +188,34 @@ class LoginViewModel {
     }
 
     func persistCredentials() {
+        credentialsSaveTask?.cancel()
+        credentialsSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            persistence.saveCredentials(credentials)
+        }
+    }
+
+    func persistCredentialsNow() {
+        credentialsSaveTask?.cancel()
+        credentialsSaveTask = nil
         persistence.saveCredentials(credentials)
     }
 
     func persistSettings() {
-        persistence.saveSettings(
-            targetSite: targetSite.rawValue,
-            maxConcurrency: maxConcurrency,
-            debugMode: debugMode,
-            appearanceMode: appearanceMode.rawValue,
-            stealthEnabled: stealthEnabled,
-            testTimeout: testTimeout
-        )
+        settingsSaveTask?.cancel()
+        settingsSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            persistence.saveSettings(
+                targetSite: targetSite.rawValue,
+                maxConcurrency: maxConcurrency,
+                debugMode: debugMode,
+                appearanceMode: appearanceMode.rawValue,
+                stealthEnabled: stealthEnabled,
+                testTimeout: testTimeout
+            )
+        }
     }
 
     func saveCropRect(_ rect: CGRect) {
@@ -888,10 +906,15 @@ class LoginViewModel {
         }
     }
 
+    private var pendingLogs: [PPSRLogEntry] = []
+    private var logFlushTask: Task<Void, Never>?
+
     func log(_ message: String, level: PPSRLogEntry.Level = .info) {
-        globalLogs.insert(PPSRLogEntry(message: message, level: level), at: 0)
-        if globalLogs.count > 2000 {
-            globalLogs = Array(globalLogs.prefix(2000))
+        pendingLogs.append(PPSRLogEntry(message: message, level: level))
+        if level == .error || pendingLogs.count >= 10 {
+            flushLogs()
+        } else {
+            scheduleLogFlush()
         }
         let debugLevel: DebugLogLevel
         switch level {
@@ -901,5 +924,25 @@ class LoginViewModel {
         case .error: debugLevel = .error
         }
         logger.log(message, category: .login, level: debugLevel)
+    }
+
+    private func scheduleLogFlush() {
+        guard logFlushTask == nil else { return }
+        logFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            self?.flushLogs()
+        }
+    }
+
+    private func flushLogs() {
+        logFlushTask?.cancel()
+        logFlushTask = nil
+        guard !pendingLogs.isEmpty else { return }
+        let batch = pendingLogs
+        pendingLogs.removeAll()
+        globalLogs.insert(contentsOf: batch.reversed(), at: 0)
+        if globalLogs.count > 2000 {
+            globalLogs.removeLast(globalLogs.count - 2000)
+        }
     }
 }

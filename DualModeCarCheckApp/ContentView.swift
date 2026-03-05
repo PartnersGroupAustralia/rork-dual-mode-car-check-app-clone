@@ -8,6 +8,10 @@ struct ContentView: View {
         case dashboard, savedCards, workingCards, sessions, settings
     }
 
+    private var settingsHash: String {
+        "\(vm.appearanceMode.rawValue)-\(vm.testEmail)-\(vm.debugMode)-\(vm.maxConcurrency)-\(vm.useEmailRotation)-\(vm.stealthEnabled)-\(vm.retrySubmitOnFail)"
+    }
+
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab("Dashboard", systemImage: "bolt.shield.fill", value: .dashboard) {
@@ -65,25 +69,7 @@ struct ContentView: View {
         .onChange(of: vm.cards.count) { _, _ in
             vm.persistCards()
         }
-        .onChange(of: vm.appearanceMode) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.testEmail) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.debugMode) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.maxConcurrency) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.useEmailRotation) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.stealthEnabled) { _, _ in
-            vm.persistSettings()
-        }
-        .onChange(of: vm.retrySubmitOnFail) { _, _ in
+        .onChange(of: settingsHash) { _, _ in
             vm.persistSettings()
         }
         .alert("Batch Results", isPresented: $vm.showBatchResultPopup) {
