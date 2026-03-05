@@ -1,7 +1,8 @@
 import SwiftUI
+import Combine
 
 struct DebugLogView: View {
-    @State private var logger = DebugLogger.shared
+    private let logger = DebugLogger.shared
     @State private var selectedCategories: Set<DebugLogCategory> = Set(DebugLogCategory.allCases)
     @State private var selectedLevel: DebugLogLevel = .trace
     @State private var searchText: String = ""
@@ -12,6 +13,7 @@ struct DebugLogView: View {
     @State private var exportText: String = ""
     @State private var autoScroll: Bool = true
     @State private var showSessionPicker: Bool = false
+    @State private var refreshTrigger: Int = 0
 
     private var filteredEntries: [DebugLogEntry] {
         var result = logger.entries
@@ -60,7 +62,10 @@ struct DebugLogView: View {
                         Label("Export Filtered Log", systemImage: "doc.text.magnifyingglass")
                     }
                     Divider()
-                    Button(role: .destructive) { logger.clearAll() } label: {
+                    Button(role: .destructive) {
+                        logger.clearAll()
+                        refreshTrigger += 1
+                    } label: {
                         Label("Clear All Logs", systemImage: "trash")
                     }
                 } label: {
@@ -74,6 +79,9 @@ struct DebugLogView: View {
         .sheet(isPresented: $showExportSheet) { exportSheet }
         .sheet(isPresented: $showStatsSheet) { statsSheet }
         .sheet(isPresented: $showSessionPicker) { sessionPickerSheet }
+        .onReceive(logger.didChange.throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)) { _ in
+            refreshTrigger += 1
+        }
     }
 
     private var filterBar: some View {
@@ -175,6 +183,7 @@ struct DebugLogView: View {
     }
 
     private var logList: some View {
+        let _ = refreshTrigger
         let entries = filteredEntries
         return Group {
             if entries.isEmpty {
@@ -213,7 +222,8 @@ struct DebugLogView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 12) {
+        let _ = refreshTrigger
+        return HStack(spacing: 12) {
             HStack(spacing: 4) {
                 Circle()
                     .fill(logger.isRecording ? .green : .red)
@@ -314,7 +324,10 @@ struct DebugLogView: View {
                 }
 
                 Section("Max Entries") {
-                    Stepper("Keep \(logger.maxEntries) entries", value: $logger.maxEntries, in: 1000...50000, step: 1000)
+                    Stepper("Keep \(logger.maxEntries) entries", value: Binding(
+                        get: { logger.maxEntries },
+                        set: { logger.maxEntries = $0 }
+                    ), in: 1000...50000, step: 1000)
                 }
             }
             .listStyle(.insetGrouped)

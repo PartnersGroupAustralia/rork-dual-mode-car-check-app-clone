@@ -581,17 +581,9 @@ struct PPSRSettingsView: View {
                     Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.purple)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Full Debug Log").font(.body)
-                        let logger = DebugLogger.shared
-                        Text("\(logger.entryCount) entries").font(.caption2).foregroundStyle(.secondary)
+                        Text("View debug entries").font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if DebugLogger.shared.errorCount > 0 {
-                        Text("\(DebugLogger.shared.errorCount)")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.red.opacity(0.12)).clipShape(Capsule())
-                    }
                 }
             }
         } header: {

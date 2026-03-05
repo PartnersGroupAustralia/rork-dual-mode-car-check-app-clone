@@ -1,5 +1,5 @@
 import Foundation
-import Observation
+import Combine
 
 nonisolated enum DebugLogCategory: String, CaseIterable, Sendable, Identifiable, Codable {
     case automation = "Automation"
@@ -167,13 +167,14 @@ nonisolated struct DebugLogEntry: Identifiable, Sendable, Codable {
     }
 }
 
-@Observable
 @MainActor
 class DebugLogger {
     static let shared = DebugLogger()
 
+    let didChange = PassthroughSubject<Void, Never>()
+
     private(set) var entries: [DebugLogEntry] = []
-    var maxEntries: Int = 10000
+    var maxEntries: Int = 5000
     var minimumLevel: DebugLogLevel = .trace
     var enabledCategories: Set<DebugLogCategory> = Set(DebugLogCategory.allCases)
     var isRecording: Bool = true
@@ -187,6 +188,11 @@ class DebugLogger {
 
     private var pendingEntries: [DebugLogEntry] = []
     private var flushTask: Task<Void, Never>?
+    private var persistTask: Task<Void, Never>?
+
+    private(set) var cachedErrorCount: Int = 0
+    private(set) var cachedWarningCount: Int = 0
+    private(set) var cachedCriticalCount: Int = 0
 
     struct ErrorHealingEvent: Identifiable {
         let id: UUID = UUID()
@@ -227,17 +233,11 @@ class DebugLogger {
 
     var entryCount: Int { entries.count }
 
-    var errorCount: Int {
-        entries.filter { $0.level >= .error }.count
-    }
+    var errorCount: Int { cachedErrorCount }
 
-    var warningCount: Int {
-        entries.filter { $0.level == .warning }.count
-    }
+    var warningCount: Int { cachedWarningCount }
 
-    var criticalCount: Int {
-        entries.filter { $0.level == .critical }.count
-    }
+    var criticalCount: Int { cachedCriticalCount }
 
     var healingSuccessRate: Double {
         guard !errorHealingLog.isEmpty else { return 1.0 }
@@ -284,7 +284,7 @@ class DebugLogger {
     private func scheduleFlush() {
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(500))
             self?.flushPendingEntries()
         }
     }
@@ -295,12 +295,37 @@ class DebugLogger {
         guard !pendingEntries.isEmpty else { return }
         let batch = pendingEntries
         pendingEntries.removeAll()
+
+        for entry in batch {
+            if entry.level >= .error { cachedErrorCount += 1 }
+            if entry.level == .warning { cachedWarningCount += 1 }
+            if entry.level >= .critical { cachedCriticalCount += 1 }
+        }
+
         entries.insert(contentsOf: batch.reversed(), at: 0)
         if entries.count > maxEntries {
+            let overflow = entries.suffix(from: maxEntries)
+            for entry in overflow {
+                if entry.level >= .error { cachedErrorCount = max(0, cachedErrorCount - 1) }
+                if entry.level == .warning { cachedWarningCount = max(0, cachedWarningCount - 1) }
+                if entry.level >= .critical { cachedCriticalCount = max(0, cachedCriticalCount - 1) }
+            }
             entries.removeLast(entries.count - maxEntries)
         }
+
         if batch.contains(where: { $0.level >= .critical }) {
-            persistCriticalEntries()
+            schedulePersistCritical()
+        }
+
+        didChange.send()
+    }
+
+    private func schedulePersistCritical() {
+        guard persistTask == nil else { return }
+        persistTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.persistCriticalEntries()
+            self?.persistTask = nil
         }
     }
 
@@ -412,6 +437,10 @@ class DebugLogger {
         stepTimers.removeAll()
         errorHealingLog.removeAll()
         retryTracker.removeAll()
+        cachedErrorCount = 0
+        cachedWarningCount = 0
+        cachedCriticalCount = 0
+        didChange.send()
     }
 
     func exportFullLog() -> String {
