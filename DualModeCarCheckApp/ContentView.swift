@@ -53,7 +53,7 @@ struct ContentView: View {
                 .overlay(alignment: .bottomLeading) { MainMenuButton() }
             }
 
-            Tab("Settings", systemImage: "gearshape", value: .settings) {
+            Tab("Settings", systemImage: "gearshape.fill", value: .settings) {
                 NavigationStack {
                     PPSRSettingsView(vm: vm)
                 }

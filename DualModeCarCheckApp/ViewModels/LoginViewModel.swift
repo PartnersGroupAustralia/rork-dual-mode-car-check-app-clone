@@ -14,7 +14,7 @@ class LoginViewModel {
     var connectionStatus: ConnectionStatus = .disconnected
     var activeTestCount: Int = 0
     var maxConcurrency: Int = 8
-    var debugMode: Bool = false
+    var debugMode: Bool = true
     var stealthEnabled: Bool = true
     var targetSite: LoginTargetSite = .joefortune
     var appearanceMode: AppearanceMode = .dark

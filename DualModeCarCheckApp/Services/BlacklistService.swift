@@ -10,7 +10,7 @@ class BlacklistService {
     var autoExcludeBlacklist: Bool = true {
         didSet { persistSettings() }
     }
-    var autoBlacklistNoAcc: Bool = false {
+    var autoBlacklistNoAcc: Bool = true {
         didSet { persistSettings() }
     }
 

@@ -34,7 +34,32 @@ struct MainMenuView: View {
                 }
 
                 VStack {
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
+                                activeMode = .flowRecorder
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "record.circle")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("RECORD FLOW")
+                                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                            }
+                            .foregroundStyle(.red.opacity(0.8))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(.red.opacity(0.15))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 16)
+                    }
+                    .padding(.top, geo.safeAreaInsets.top + 12)
+
                     Spacer()
+
                     HStack {
                         Button {
                             withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
@@ -55,25 +80,6 @@ struct MainMenuView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.leading, 16)
-
-                        Button {
-                            withAnimation(.spring(duration: 0.4, bounce: 0.15)) {
-                                activeMode = .flowRecorder
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "record.circle")
-                                    .font(.system(size: 9, weight: .semibold))
-                                Text("RECORD FLOW")
-                                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
-                            }
-                            .foregroundStyle(.white.opacity(0.35))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(.red.opacity(0.12))
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
 
                         Spacer()
 

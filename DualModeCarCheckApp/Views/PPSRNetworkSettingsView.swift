@@ -1,16 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct PPSRSettingsView: View {
+struct PPSRNetworkSettingsView: View {
     @Bindable var vm: PPSRAutomationViewModel
-    @AppStorage("introVideoEnabled") private var introVideoEnabled: Bool = false
-    @State private var showEmailImport: Bool = false
-    @State private var emailCSVText: String = ""
-    @State private var cropX: String = ""
-    @State private var cropY: String = ""
-    @State private var cropW: String = ""
-    @State private var cropH: String = ""
-    @State private var showCropEditor: Bool = false
     @State private var showDNSManager: Bool = false
     @State private var showPPSRProxyImport: Bool = false
     @State private var ppsrProxyBulkText: String = ""
@@ -18,12 +10,6 @@ struct PPSRSettingsView: View {
     @State private var isTestingPPSRProxies: Bool = false
     @State private var showPPSRVPNFileImporter: Bool = false
     @State private var showPPSRWGFileImporter: Bool = false
-    @State private var showExportSheet: Bool = false
-    @State private var showImportSheet: Bool = false
-    @State private var importConfigText: String = ""
-    @State private var importResult: AppDataExportService.ImportResult?
-    @State private var exportedJSON: String = ""
-    @State private var showImportFileImporter: Bool = false
     @State private var nordAccessKeyInput: String = ""
     @State private var isTestingVPNConfigs: Bool = false
 
@@ -32,28 +18,14 @@ struct PPSRSettingsView: View {
 
     var body: some View {
         List {
-            importSection
-            networksLinkSection
-            automationSection
-            concurrencySection
-            stealthSection
-            emailSection
-            screenshotSection
-            debugSection
-            iCloudSection
-            configExportImportSection
-            appearanceSection
-            introVideoSection
-            aboutSection
+            connectionModeSection
+            nordVPNSection
+            endpointSection
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Advanced Settings")
-        .sheet(isPresented: $showEmailImport) { emailImportSheet }
-        .sheet(isPresented: $showCropEditor) { cropEditorSheet }
+        .navigationTitle("Networks")
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
         .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
-        .sheet(isPresented: $showExportSheet) { exportConfigSheet }
-        .sheet(isPresented: $showImportSheet) { importConfigSheet }
         .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -120,21 +92,7 @@ struct PPSRSettingsView: View {
         }
     }
 
-    private var networksLinkSection: some View {
-        Section {
-            NavigationLink {
-                PPSRNetworkSettingsView(vm: vm)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "network").font(.title3).foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Networks").font(.subheadline.bold())
-                        Text("Connection, proxies, VPN, DNS & diagnostics").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
+    // MARK: - Connection Mode
 
     private var connectionModeSection: some View {
         let currentMode = proxyService.connectionMode(for: .ppsr)
@@ -398,301 +356,7 @@ struct PPSRSettingsView: View {
         }
     }
 
-    private func ppsrProxyRow(proxy: ProxyConfig) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(proxyStatusColor(proxy))
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(proxy.displayString)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(proxy.statusLabel)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(proxyStatusColor(proxy))
-                    if let date = proxy.lastTested {
-                        Text(date, style: .relative)
-                            .font(.caption2).foregroundStyle(.quaternary)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) { proxyService.removeProxy(proxy, target: .ppsr) } label: { Label("Delete", systemImage: "trash") }
-        }
-    }
-
-    private func proxyStatusBadge(proxies: [ProxyConfig]) -> some View {
-        Group {
-            if !proxies.isEmpty {
-                HStack(spacing: 4) {
-                    let working = proxies.filter(\.isWorking).count
-                    if working > 0 {
-                        Text("\(working) ok")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.green)
-                    }
-                    let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                    if dead > 0 {
-                        Text("\(dead) dead")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.red)
-                    }
-                }
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(Color(.tertiarySystemFill)).clipShape(Capsule())
-            }
-        }
-    }
-
-    private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
-        if proxy.lastTested == nil { return .gray }
-        return proxy.isWorking ? .green : .red
-    }
-
-    private func ppsrConnectionModeColor(_ mode: ConnectionMode) -> Color {
-        switch mode {
-        case .proxy: .blue
-        case .openvpn: .indigo
-        case .wireguard: .purple
-        case .dns: .cyan
-        }
-    }
-
-    private var stealthSection: some View {
-        Section {
-            Toggle(isOn: $vm.stealthEnabled) {
-                HStack(spacing: 10) {
-                    Image(systemName: "eye.slash.fill").foregroundStyle(.purple)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Ultra Stealth Mode").font(.body)
-                        Text("Rotating user agents, fingerprints & viewports").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.purple)
-            .sensoryFeedback(.impact(weight: .light), trigger: vm.stealthEnabled)
-        } header: {
-            Text("Stealth")
-        } footer: {
-            Text(vm.stealthEnabled ? "Each session uses a unique browser identity. Canvas, WebGL, timezone and navigator properties are spoofed." : "Enable to rotate browser fingerprints across sessions.")
-        }
-    }
-
-    private var automationSection: some View {
-        Section {
-            Toggle(isOn: $vm.retrySubmitOnFail) {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Retry Submit on Fail").font(.body)
-                        Text("Automatically retries submit if no clear result").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.orange)
-            .sensoryFeedback(.impact(weight: .light), trigger: vm.retrySubmitOnFail)
-        } header: {
-            Text("Automation")
-        }
-    }
-
-    private var screenshotSection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "rectangle.dashed").foregroundStyle(.indigo)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Screenshot Mode").font(.body)
-                    Text("Full-page capture on every test").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("Full Page").font(.system(.caption, design: .monospaced, weight: .bold)).foregroundStyle(.indigo)
-                    .padding(.horizontal, 8).padding(.vertical, 4).background(Color.indigo.opacity(0.12)).clipShape(Capsule())
-            }
-
-            Button {
-                cropX = vm.screenshotCropRect == .zero ? "" : "\(Int(vm.screenshotCropRect.origin.x))"
-                cropY = vm.screenshotCropRect == .zero ? "" : "\(Int(vm.screenshotCropRect.origin.y))"
-                cropW = vm.screenshotCropRect == .zero ? "" : "\(Int(vm.screenshotCropRect.size.width))"
-                cropH = vm.screenshotCropRect == .zero ? "" : "\(Int(vm.screenshotCropRect.size.height))"
-                showCropEditor = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "crop").foregroundStyle(.indigo)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Focus Crop Area").font(.body)
-                        Text(vm.screenshotCropRect == .zero ? "No crop — showing full page" : "Crop: \(Int(vm.screenshotCropRect.origin.x)),\(Int(vm.screenshotCropRect.origin.y)) \(Int(vm.screenshotCropRect.width))×\(Int(vm.screenshotCropRect.height))")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-
-            if vm.screenshotCropRect != .zero {
-                Button(role: .destructive) {
-                    vm.screenshotCropRect = .zero
-                    vm.persistSettings()
-                    vm.log("Cleared screenshot focus crop area")
-                } label: {
-                    Label("Clear Focus Crop", systemImage: "xmark.circle")
-                }
-            }
-        } header: {
-            Text("Screenshots")
-        }
-    }
-
-    private var debugSection: some View {
-        Section {
-            Toggle(isOn: $vm.debugMode) {
-                HStack(spacing: 10) {
-                    Image(systemName: "ladybug.fill").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Debug Mode").font(.body)
-                        Text("Captures full-page screenshot per test").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.orange)
-
-            if vm.debugMode {
-                NavigationLink {
-                    PPSRDebugScreenshotsView(vm: vm)
-                } label: {
-                    HStack {
-                        Image(systemName: "photo.stack").foregroundStyle(.orange)
-                        Text("Debug Screenshots")
-                        Spacer()
-                        Text("\(vm.debugScreenshots.count)").font(.system(.caption, design: .monospaced, weight: .bold)).foregroundStyle(.secondary)
-                    }
-                }
-
-                if !vm.debugScreenshots.isEmpty {
-                    Button(role: .destructive) { vm.debugScreenshots.removeAll() } label: { Label("Clear All Screenshots", systemImage: "trash") }
-                }
-            }
-            NavigationLink {
-                DebugLogView()
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.purple)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Full Debug Log").font(.body)
-                        let logger = DebugLogger.shared
-                        Text("\(logger.entryCount) entries").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if DebugLogger.shared.errorCount > 0 {
-                        Text("\(DebugLogger.shared.errorCount)")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.red.opacity(0.12)).clipShape(Capsule())
-                    }
-                }
-            }
-        } header: {
-            Text("Debug")
-        } footer: {
-            Text(vm.debugMode ? "Full-page screenshot captured per test." : "Enable to capture WebView screenshots during automation.")
-        }
-    }
-
-    private var importSection: some View {
-        Section {
-            if !vm.untestedCards.isEmpty {
-                Button {
-                    vm.testAllUntested()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Label("Test All Untested (\(vm.untestedCards.count))", systemImage: "play.fill").font(.headline)
-                        Spacer()
-                    }
-                }
-                .disabled(vm.isRunning)
-                .listRowBackground(vm.isRunning ? Color.indigo.opacity(0.4) : Color.indigo)
-                .foregroundStyle(.white)
-                .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
-            }
-        } header: {
-            Text("Quick Actions")
-        }
-    }
-
-    private var iCloudSection: some View {
-        Section {
-            Button { vm.syncFromiCloud() } label: {
-                HStack(spacing: 10) { Image(systemName: "icloud.and.arrow.down").foregroundStyle(.blue); Text("Sync from iCloud") }
-            }
-            Button {
-                vm.persistCards()
-                vm.log("Forced save to local + iCloud", level: .success)
-            } label: {
-                HStack(spacing: 10) { Image(systemName: "icloud.and.arrow.up").foregroundStyle(.blue); Text("Force Save to iCloud") }
-            }
-        } header: {
-            Text("iCloud Sync")
-        } footer: {
-            Text("Cards are automatically saved locally and to iCloud.")
-        }
-    }
-
-    private var emailSection: some View {
-        Section {
-            Toggle(isOn: $vm.useEmailRotation) {
-                HStack(spacing: 10) {
-                    Image(systemName: "envelope.arrow.triangle.branch.fill").foregroundStyle(.teal)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Generate Email").font(.body)
-                        Text("Rotate through uploaded email list").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.teal)
-
-            if vm.useEmailRotation {
-                HStack {
-                    Image(systemName: "list.bullet").foregroundStyle(.teal)
-                    Text("Email Pool")
-                    Spacer()
-                    Text("\(vm.rotationEmailCount) emails").font(.system(.caption, design: .monospaced, weight: .bold)).foregroundStyle(.secondary)
-                }
-                Button { showEmailImport = true } label: { Label("Import Email CSV", systemImage: "square.and.arrow.down") }
-                if vm.rotationEmailCount > 0 {
-                    Button { vm.resetRotationEmailsToDefault() } label: { Label("Reset to Default List", systemImage: "arrow.counterclockwise") }
-                    Button(role: .destructive) { vm.clearRotationEmails() } label: { Label("Clear Email List", systemImage: "trash") }
-                }
-            }
-
-            if !vm.useEmailRotation {
-                TextField("Test email", text: $vm.testEmail)
-                    .keyboardType(.emailAddress).textContentType(.emailAddress)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    .font(.system(.body, design: .monospaced))
-            }
-        } header: {
-            Text("Email")
-        } footer: {
-            Text(vm.useEmailRotation ? "Each test uses the next email from the pool." : "Applied to all PPSR checks.")
-        }
-    }
-
-    private var concurrencySection: some View {
-        Section {
-            Picker("Max Sessions", selection: $vm.maxConcurrency) {
-                ForEach(1...8, id: \.self) { n in Text("\(n)").tag(n) }
-            }
-            .pickerStyle(.menu)
-        } header: {
-            Text("Concurrency")
-        } footer: {
-            Text("Up to 8 concurrent WKWebView sessions.")
-        }
-    }
+    // MARK: - NordVPN
 
     private var nordVPNSection: some View {
         Section {
@@ -817,6 +481,8 @@ struct PPSRSettingsView: View {
         }
     }
 
+    // MARK: - Endpoint
+
     private var endpointSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
@@ -896,327 +562,72 @@ struct PPSRSettingsView: View {
         }
     }
 
-    private var appearanceSection: some View {
-        Section {
-            Picker(selection: $vm.appearanceMode) {
-                ForEach(PPSRAutomationViewModel.AppearanceMode.allCases, id: \.self) { mode in
-                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                }
-            } label: {
-                HStack(spacing: 10) { Image(systemName: "paintbrush.fill").foregroundStyle(.purple); Text("Appearance") }
-            }
-        } header: {
-            Text("Appearance")
-        }
-    }
+    // MARK: - Helpers
 
-    private var introVideoSection: some View {
-        Section {
-            Toggle(isOn: $introVideoEnabled) {
-                HStack(spacing: 10) {
-                    Image(systemName: "film.fill").foregroundStyle(.pink)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Intro Video").font(.body)
-                        Text("Play intro video on app launch").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tint(.pink)
-            .sensoryFeedback(.impact(weight: .light), trigger: introVideoEnabled)
-        } header: {
-            Text("Startup")
-        } footer: {
-            Text(introVideoEnabled ? "Intro video will play each time you open the app." : "Intro video is disabled. Enable to show it on launch.")
-        }
-    }
-
-    private var configExportImportSection: some View {
-        Section {
-            Button {
-                exportedJSON = AppDataExportService.shared.exportJSON()
-                showExportSheet = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.and.arrow.up.fill").foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Export Configuration").font(.body)
-                        Text("URLs, proxies, DNS, VPN, blacklist & settings").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-
-            Button {
-                importConfigText = ""
-                importResult = nil
-                showImportSheet = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.and.arrow.down.fill").foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Import Configuration").font(.body)
-                        Text("Paste or load a JSON config to merge").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        } header: {
-            Text("Configuration Backup")
-        } footer: {
-            Text("Export saves all URLs, proxies, VPN configs, DNS servers, blacklist, and connection modes as JSON. Import merges without overwriting existing entries.")
-        }
-    }
-
-    private var exportConfigSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack(spacing: 12) {
-                    Button {
-                        UIPasteboard.general.string = exportedJSON
-                        vm.log("Config JSON copied to clipboard", level: .success)
-                    } label: {
-                        Label("Copy to Clipboard", systemImage: "doc.on.doc.fill")
-                            .font(.subheadline.bold())
-                    }
-                    .buttonStyle(.borderedProminent).tint(.blue)
-
-                    Spacer()
-
-                    let byteCount = exportedJSON.utf8.count
-                    Text("\(byteCount / 1024)KB")
+    private func ppsrProxyRow(proxy: ProxyConfig) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(proxyStatusColor(proxy))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proxy.displayString)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(proxy.statusLabel)
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(proxyStatusColor(proxy))
+                    if let date = proxy.lastTested {
+                        Text(date, style: .relative)
+                            .font(.caption2).foregroundStyle(.quaternary)
+                    }
                 }
-                .padding(.horizontal)
-
-                ScrollView {
-                    Text(exportedJSON)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemGroupedBackground))
-                        .clipShape(.rect(cornerRadius: 10))
-                }
-                .padding(.horizontal)
             }
-            .padding(.top)
-            .navigationTitle("Export Config").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { showExportSheet = false } }
-            }
+            Spacer()
         }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { proxyService.removeProxy(proxy, target: .ppsr) } label: { Label("Delete", systemImage: "trash") }
+        }
     }
 
-    private var importConfigSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack(spacing: 8) {
-                    Button {
-                        if let clip = UIPasteboard.general.string { importConfigText = clip }
-                    } label: {
-                        Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-
-                    Button { showImportFileImporter = true } label: {
-                        Label("Load File", systemImage: "folder").font(.caption)
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-
-                    Spacer()
-
-                    let lineCount = importConfigText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
-                    if lineCount > 0 {
-                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-
-                TextEditor(text: $importConfigText)
-                    .font(.system(.callout, design: .monospaced))
-                    .scrollContentBackground(.hidden).padding(10)
-                    .background(Color(.tertiarySystemGroupedBackground))
-                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 180)
-                    .overlay(alignment: .topLeading) {
-                        if importConfigText.isEmpty {
-                            Text("Paste exported JSON config here...")
-                                .font(.system(.callout, design: .monospaced))
-                                .foregroundStyle(.quaternary)
-                                .padding(.horizontal, 14).padding(.vertical, 18)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                if let result = importResult {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(result.summary)
-                            .font(.system(.caption, design: .monospaced, weight: .bold))
+    private func proxyStatusBadge(proxies: [ProxyConfig]) -> some View {
+        Group {
+            if !proxies.isEmpty {
+                HStack(spacing: 4) {
+                    let working = proxies.filter(\.isWorking).count
+                    if working > 0 {
+                        Text("\(working) ok")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
                             .foregroundStyle(.green)
-                        if !result.errors.isEmpty {
-                            ForEach(result.errors, id: \.self) { error in
-                                Text(error)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.red)
-                            }
-                        }
                     }
-                    .padding(.horizontal)
-                }
-
-                Spacer()
-            }
-            .padding(.top)
-            .navigationTitle("Import Config").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showImportSheet = false; importConfigText = ""; importResult = nil }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
-                        let result = AppDataExportService.shared.importJSON(importConfigText)
-                        importResult = result
-                        vm.log(result.summary, level: result.errors.isEmpty ? .success : .warning)
-                        if result.errors.isEmpty {
-                            Task {
-                                try? await Task.sleep(for: .seconds(2))
-                                showImportSheet = false
-                                importConfigText = ""
-                                importResult = nil
-                            }
-                        }
+                    let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                    if dead > 0 {
+                        Text("\(dead) dead")
+                            .font(.system(.caption2, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.red)
                     }
-                    .disabled(importConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Color(.tertiarySystemFill)).clipShape(Capsule())
             }
-            .fileImporter(isPresented: $showImportFileImporter, allowedContentTypes: [.json, .plainText], allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    guard url.startAccessingSecurityScopedResource() else { return }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
-                        importConfigText = text
-                    }
-                case .failure(let error):
-                    vm.log("File import error: \(error.localizedDescription)", level: .error)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-    }
-
-    private var aboutSection: some View {
-        Section {
-            LabeledContent("Version", value: "8.0.0")
-            LabeledContent("Engine", value: "WKWebView Live")
-            LabeledContent("Storage", value: "Unlimited · Local + iCloud")
-            LabeledContent("Stealth") { Text(vm.stealthEnabled ? "Ultra Stealth" : "Standard").foregroundStyle(vm.stealthEnabled ? .purple : .secondary) }
-            LabeledContent("Connection") {
-                Text(proxyService.ppsrConnectionMode.label)
-                    .foregroundStyle(proxyService.ppsrConnectionMode == .proxy ? .blue : .cyan)
-            }
-            LabeledContent("Mode") { Text("Live — Real Transactions").foregroundStyle(.orange) }
-            Button(role: .destructive) { vm.clearAll() } label: { Label("Clear Session History", systemImage: "trash") }
-        } header: {
-            Text("About")
         }
     }
 
-    private var cropEditorSheet: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Focus Crop Area").font(.headline)
-                    Text("Define a rectangle (in points) to crop from the full-page screenshot.").font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                VStack(spacing: 12) {
-                    HStack(spacing: 12) {
-                        cropField("X", text: $cropX)
-                        cropField("Y", text: $cropY)
-                    }
-                    HStack(spacing: 12) {
-                        cropField("Width", text: $cropW)
-                        cropField("Height", text: $cropH)
-                    }
-                }
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Focus Crop").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showCropEditor = false } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let x = Double(cropX) ?? 0; let y = Double(cropY) ?? 0
-                        let w = Double(cropW) ?? 0; let h = Double(cropH) ?? 0
-                        if w > 0 && h > 0 {
-                            vm.screenshotCropRect = CGRect(x: x, y: y, width: w, height: h)
-                            vm.log("Set focus crop: \(Int(x)),\(Int(y)) \(Int(w))×\(Int(h))")
-                        } else {
-                            vm.screenshotCropRect = .zero
-                        }
-                        vm.persistSettings()
-                        showCropEditor = false
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium]).presentationDragIndicator(.visible)
+    private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
+        if proxy.lastTested == nil { return .gray }
+        return proxy.isWorking ? .green : .red
     }
 
-    private func cropField(_ label: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption.bold()).foregroundStyle(.secondary)
-            TextField("0", text: text)
-                .keyboardType(.numberPad).font(.system(.body, design: .monospaced))
-                .padding(10).background(Color(.tertiarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 8))
+    private func ppsrConnectionModeColor(_ mode: ConnectionMode) -> Color {
+        switch mode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
         }
     }
 
-    private var emailImportSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Import Emails").font(.headline)
-                    Text("Paste email addresses separated by commas or newlines.").font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                TextEditor(text: $emailCSVText)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden).padding(12)
-                    .background(Color(.tertiarySystemGroupedBackground)).clipShape(.rect(cornerRadius: 10))
-                    .frame(minHeight: 180)
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Import Emails").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showEmailImport = false } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
-                        let count = vm.importEmails(emailCSVText)
-                        emailCSVText = ""
-                        showEmailImport = false
-                        vm.log("Imported \(count) emails for rotation", level: .success)
-                    }
-                    .disabled(emailCSVText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-    }
+    // MARK: - Sheets
 
     private var ppsrProxyImportSheet: some View {
         NavigationStack {
@@ -1394,7 +805,6 @@ struct PPSRSettingsView: View {
                                 Image(systemName: provider.isEnabled ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(provider.isEnabled ? .cyan : .secondary)
                             }
-
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
                                     Text(provider.name).font(.system(.subheadline, design: .monospaced, weight: .medium))
@@ -1409,7 +819,6 @@ struct PPSRSettingsView: View {
                                 Text(provider.url.replacingOccurrences(of: "https://", with: ""))
                                     .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
                             }
-
                             Spacer()
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -1429,14 +838,12 @@ struct PPSRSettingsView: View {
                     } label: {
                         Label(showDNSImport ? "Hide Import" : "Import / Add Servers", systemImage: "plus.circle.fill")
                     }
-
                     Button {
                         PPSRDoHService.shared.enableAll()
                         vm.log("Enabled all DNS providers", level: .success)
                     } label: {
                         Label("Enable All", systemImage: "checkmark.circle")
                     }
-
                     Button {
                         PPSRDoHService.shared.resetToDefaults()
                         vm.log("Reset DNS providers to defaults", level: .success)
