@@ -427,7 +427,6 @@ class PPSRAutomationEngine {
 
         check.responseSnapshot = fullImage
 
-        guard debugMode else { return }
 
         let compressed: UIImage
         if let jpegData = fullImage.jpegData(compressionQuality: 0.3), let ci = UIImage(data: jpegData) {
