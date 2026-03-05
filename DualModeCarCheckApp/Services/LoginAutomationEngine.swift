@@ -181,39 +181,30 @@ class LoginAutomationEngine {
             attempt.logs.append(PPSRLogEntry(message: "Both login fields verified present and enabled", level: .success))
         }
 
-        await session.preSaveCredentials(username: attempt.credential.username, password: attempt.credential.password)
-        attempt.logs.append(PPSRLogEntry(message: "Pre-saved credentials (autofill simulation)", level: .info))
-        try? await Task.sleep(for: .milliseconds(300))
-
-        logger.log("Phase: FILL CREDENTIALS", category: .automation, level: .info, sessionId: sessionId)
-        advanceTo(.fillingCredentials, attempt: attempt, message: "Filling username: \(attempt.credential.username)")
-        logger.startTimer(key: "\(sessionId)_fill_user")
-        let usernameResult = await retryFill(session: session, attempt: attempt, fieldName: "Username", sessionId: sessionId) {
-            await session.fillUsername(attempt.credential.username)
-        }
-        let fillUserMs = logger.stopTimer(key: "\(sessionId)_fill_user")
-        logger.log("Username fill: \(usernameResult ? "SUCCESS" : "FAILED")", category: .automation, level: usernameResult ? .debug : .error, sessionId: sessionId, durationMs: fillUserMs)
-        guard usernameResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(400))
-
-        attempt.logs.append(PPSRLogEntry(message: "Filling password: \(String(repeating: "•", count: min(attempt.credential.password.count, 8)))", level: .info))
-        logger.startTimer(key: "\(sessionId)_fill_pass")
-        let passwordResult = await retryFill(session: session, attempt: attempt, fieldName: "Password", sessionId: sessionId) {
-            await session.fillPassword(attempt.credential.password)
-        }
-        let fillPassMs = logger.stopTimer(key: "\(sessionId)_fill_pass")
-        logger.log("Password fill: \(passwordResult ? "SUCCESS" : "FAILED")", category: .automation, level: passwordResult ? .debug : .error, sessionId: sessionId, durationMs: fillPassMs)
-        guard passwordResult else { return .connectionFailure }
-        try? await Task.sleep(for: .milliseconds(500))
+        let humanEngine = HumanInteractionEngine.shared
+        let patternLearning = LoginPatternLearning.shared
+        let targetURLString = session.targetURL.absoluteString
 
         let maxSubmitCycles = 4
         var finalOutcome: LoginOutcome = .noAcc
         var lastEvaluation: EvaluationResult?
+        var usedPatterns: [LoginFormPattern] = []
 
         for cycle in 1...maxSubmitCycles {
-            logger.log("Phase: SUBMIT CYCLE \(cycle)/\(maxSubmitCycles)", category: .automation, level: .info, sessionId: sessionId)
+            logger.log("Phase: HUMAN PATTERN CYCLE \(cycle)/\(maxSubmitCycles)", category: .automation, level: .info, sessionId: sessionId)
             logger.startTimer(key: "\(sessionId)_cycle_\(cycle)")
-            advanceTo(.submitting, attempt: attempt, message: "Submit cycle \(cycle)/\(maxSubmitCycles) — checking login button readiness")
+
+            let selectedPattern: LoginFormPattern
+            if cycle == 1 {
+                selectedPattern = humanEngine.selectBestPattern(for: targetURLString)
+            } else {
+                let remaining = LoginFormPattern.allCases.filter { !usedPatterns.contains($0) }
+                selectedPattern = remaining.randomElement() ?? LoginFormPattern.allCases.randomElement()!
+            }
+            usedPatterns.append(selectedPattern)
+
+            advanceTo(.fillingCredentials, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — using pattern: \(selectedPattern.rawValue)")
+            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): selected pattern '\(selectedPattern.rawValue)' — \(selectedPattern.description)", level: .info))
 
             if cycle > 1 {
                 let buttonCheck = await session.checkLoginButtonReadiness()
@@ -221,7 +212,7 @@ class LoginAutomationEngine {
                     attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button not ready (\(buttonCheck.detail)) — waiting up to 15s", level: .warning))
                     let waitResult = await session.waitForLoginButtonReady(timeout: 15)
                     if waitResult.timedOut {
-                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button hung (translucent/loading state) — requeuing to bottom", level: .warning))
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): login button hung — requeuing", level: .warning))
                         attempt.status = .failed
                         attempt.errorMessage = "Login button hung in loading state — requeued"
                         attempt.completedAt = Date()
@@ -229,80 +220,68 @@ class LoginAutomationEngine {
                         return .unsure
                     }
                 }
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 500...1500)))
+            }
 
-                attempt.logs.append(PPSRLogEntry(message: "Re-filling credentials for cycle \(cycle)", level: .info))
+            await session.dismissCookieNotices()
+            try? await Task.sleep(for: .milliseconds(Int.random(in: 200...600)))
+
+            logger.startTimer(key: "\(sessionId)_pattern_\(cycle)")
+            let patternResult = await session.executeHumanPattern(
+                selectedPattern,
+                username: attempt.credential.username,
+                password: attempt.credential.password,
+                sessionId: sessionId
+            )
+            let patternMs = logger.stopTimer(key: "\(sessionId)_pattern_\(cycle)")
+
+            attempt.logs.append(PPSRLogEntry(
+                message: "Cycle \(cycle) pattern result: \(patternResult.summary)",
+                level: patternResult.overallSuccess ? .success : .warning
+            ))
+            logger.log("Pattern '\(selectedPattern.rawValue)' result: \(patternResult.summary)", category: .automation, level: patternResult.overallSuccess ? .success : .warning, sessionId: sessionId, durationMs: patternMs)
+
+            if !patternResult.usernameFilled || !patternResult.passwordFilled {
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): field fill failed — falling back to legacy fill", level: .warning))
                 let _ = await session.fillUsername(attempt.credential.username)
                 try? await Task.sleep(for: .milliseconds(300))
                 let _ = await session.fillPassword(attempt.credential.password)
                 try? await Task.sleep(for: .milliseconds(400))
             }
 
-            let preClickCheck = await session.checkLoginButtonReadiness()
-            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) button state: \(preClickCheck.detail) ready:\(preClickCheck.isReady)", level: preClickCheck.isReady ? .info : .warning))
+            advanceTo(.submitting, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — evaluating submit...")
 
-            if !preClickCheck.isReady {
-                let waitResult = await session.waitForLoginButtonReady(timeout: 10)
-                if waitResult.timedOut {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still not ready after 10s wait", level: .warning))
-                }
-            }
-
-            try? await Task.sleep(for: .milliseconds(500))
-
-            var submitResult: (success: Bool, detail: String) = (false, "")
-            var clickVerified = false
-            for submitAttempt in 1...4 {
-                logger.startTimer(key: "\(sessionId)_click_\(cycle)_\(submitAttempt)")
-                submitResult = await session.clickLoginButton()
-                let clickMs = logger.stopTimer(key: "\(sessionId)_click_\(cycle)_\(submitAttempt)")
-                logger.log("Click attempt \(submitAttempt)/4: \(submitResult.success ? "sent" : "FAILED") — \(submitResult.detail)", category: .automation, level: submitResult.success ? .trace : .warning, sessionId: sessionId, durationMs: clickMs)
-                if submitResult.success {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt): \(submitResult.detail)", level: .info))
-
-                    let verification = await session.verifyClickRegistered(timeout: 2)
-                    if verification.registered {
-                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): click VERIFIED registered (\(verification.detail))", level: .success))
-                        clickVerified = true
+            if !patternResult.submitTriggered {
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying legacy click strategies", level: .warning))
+                var legacySubmitOK = false
+                for submitAttempt in 1...3 {
+                    let clickResult = await session.clickLoginButton()
+                    if clickResult.success {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) legacy click attempt \(submitAttempt): \(clickResult.detail)", level: .info))
+                        legacySubmitOK = true
                         break
-                    } else {
-                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): click sent but NOT verified (\(verification.detail)) — retrying with different method", level: .warning))
-                        if submitAttempt == 2 {
-                            let enterResult = await session.pressEnterOnPasswordField()
-                            if enterResult.success {
-                                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): fallback Enter key pressed", level: .info))
-                                let enterVerify = await session.verifyClickRegistered(timeout: 2)
-                                if enterVerify.registered {
-                                    clickVerified = true
-                                    submitResult = enterResult
-                                    break
-                                }
-                            }
-                        }
                     }
-                } else {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit attempt \(submitAttempt)/4 failed: \(submitResult.detail)", level: .warning))
+                    if submitAttempt < 3 {
+                        try? await Task.sleep(for: .seconds(Double(submitAttempt)))
+                    }
                 }
-                if submitAttempt < 4 {
-                    try? await Task.sleep(for: .seconds(Double(submitAttempt)))
-                    await session.dismissCookieNotices()
+                if !legacySubmitOK {
+                    let ocrResult = await session.ocrClickLoginButton()
+                    if ocrResult.success {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) OCR click: \(ocrResult.detail)", level: .info))
+                        legacySubmitOK = true
+                    }
                 }
-            }
-            guard submitResult.success else {
-                if cycle == 1 {
-                    failAttempt(attempt, message: "LOGIN SUBMIT FAILED after 4 attempts: \(submitResult.detail)")
-                    await captureDebugScreenshot(session: session, attempt: attempt, step: "submit_failed", note: "Submit button not found", autoResult: .fail)
+                if !legacySubmitOK && cycle == 1 {
+                    patternLearning.recordAttempt(url: targetURLString, pattern: selectedPattern, fillSuccess: patternResult.usernameFilled && patternResult.passwordFilled, submitSuccess: false, loginOutcome: "submit_failed", responseTimeMs: patternMs ?? 0, submitMethod: patternResult.submitMethod)
+                    failAttempt(attempt, message: "LOGIN SUBMIT FAILED after pattern + legacy attempts")
+                    await captureDebugScreenshot(session: session, attempt: attempt, step: "submit_failed", note: "All submit strategies failed", autoResult: .fail)
                     return .connectionFailure
                 }
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) submit failed — using last evaluation", level: .warning))
-                break
-            }
-
-            if !clickVerified {
-                let postClickCheck = await session.checkLoginButtonReadiness()
-                if !postClickCheck.isReady {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button debossed (opacity:\(String(format: "%.2f", postClickCheck.opacity))) — click registered via readiness check", level: .success))
-                } else {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): button still opaque — click may not have registered, proceeding anyway", level: .warning))
+                if !legacySubmitOK {
+                    patternLearning.recordAttempt(url: targetURLString, pattern: selectedPattern, fillSuccess: patternResult.usernameFilled && patternResult.passwordFilled, submitSuccess: false, loginOutcome: "submit_failed", responseTimeMs: patternMs ?? 0, submitMethod: patternResult.submitMethod)
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) all submit methods failed — skipping to next cycle", level: .warning))
+                    continue
                 }
             }
 
@@ -392,9 +371,27 @@ class LoginAutomationEngine {
                 level: evaluation.outcome == .success ? .success : evaluation.outcome == .noAcc ? .warning : .error
             ))
 
+            let outcomeStr: String
+            switch evaluation.outcome {
+            case .success: outcomeStr = "success"
+            case .tempDisabled: outcomeStr = "tempDisabled"
+            case .permDisabled: outcomeStr = "permDisabled"
+            case .noAcc: outcomeStr = "noAcc"
+            default: outcomeStr = "unsure"
+            }
+            patternLearning.recordAttempt(
+                url: targetURLString,
+                pattern: selectedPattern,
+                fillSuccess: patternResult.usernameFilled && patternResult.passwordFilled,
+                submitSuccess: patternResult.submitTriggered || true,
+                loginOutcome: outcomeStr,
+                responseTimeMs: cycleMs ?? 0,
+                submitMethod: patternResult.submitMethod
+            )
+
             switch evaluation.outcome {
             case .success:
-                advanceTo(.completed, attempt: attempt, message: "LOGIN SUCCESS on cycle \(cycle) — \(evaluation.reason)")
+                advanceTo(.completed, attempt: attempt, message: "LOGIN SUCCESS on cycle \(cycle) via pattern '\(selectedPattern.rawValue)' — \(evaluation.reason)")
                 attempt.completedAt = Date()
                 return .success
 

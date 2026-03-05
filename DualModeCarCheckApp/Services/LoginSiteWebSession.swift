@@ -1236,6 +1236,24 @@ class LoginSiteWebSession: NSObject {
         return await executeJS(js) ?? "{}"
     }
 
+    func executeHumanPattern(
+        _ pattern: LoginFormPattern,
+        username: String,
+        password: String,
+        sessionId: String
+    ) async -> HumanPatternResult {
+        let engine = HumanInteractionEngine.shared
+        return await engine.executePattern(
+            pattern,
+            username: username,
+            password: password,
+            executeJS: { [weak self] js in
+                await self?.executeJS(js)
+            },
+            sessionId: sessionId
+        )
+    }
+
     private func classifyFillResult(_ result: String?, fieldName: String) -> (success: Bool, detail: String) {
         switch result {
         case "OK":
