@@ -4,6 +4,9 @@ struct AutomationSettingsView: View {
     @Bindable var vm: LoginViewModel
     @State private var showFlowAssignment: Bool = false
     @State private var showPatternReorder: Bool = false
+    @State private var showButtonTextEditor: Bool = false
+    @State private var showMFAKeywordEditor: Bool = false
+    @State private var showCaptchaKeywordEditor: Bool = false
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -15,12 +18,20 @@ struct AutomationSettingsView: View {
             fieldDetectionSection
             cookieConsentSection
             credentialEntrySection
+            formInteractionSection
+            loginButtonSection
             patternStrategySection
             submitBehaviorSection
+            timeDelaysSection
             postSubmitEvalSection
+            mfaHandlingSection
+            captchaHandlingSection
             retryRequeueSection
+            errorClassificationSection
+            sessionManagementSection
             stealthDetailSection
             humanSimulationSection
+            viewportWindowSection
             screenshotDebugSection
             concurrencyDetailSection
             networkPerModeSection
@@ -43,6 +54,30 @@ struct AutomationSettingsView: View {
                 PatternPriorityView(settings: $vm.automationSettings)
             }
             .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showButtonTextEditor) {
+            NavigationStack {
+                KeywordListEditor(title: "Button Text Matches", keywords: $vm.automationSettings.loginButtonTextMatches)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showMFAKeywordEditor) {
+            NavigationStack {
+                KeywordListEditor(title: "MFA Keywords", keywords: $vm.automationSettings.mfaKeywords)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showCaptchaKeywordEditor) {
+            NavigationStack {
+                KeywordListEditor(title: "CAPTCHA Keywords", keywords: $vm.automationSettings.captchaKeywords)
+            }
+            .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
         }
@@ -246,6 +281,231 @@ struct AutomationSettingsView: View {
         }
     }
 
+    // MARK: - Form Interaction Advanced
+
+    private var formInteractionSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.clearFieldsBeforeTyping) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Clear Fields Before Typing")
+                    Text("Remove existing content before entering credentials").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.clearFieldsBeforeTyping {
+                Picker("Clear Method", selection: $vm.automationSettings.clearFieldMethod) {
+                    ForEach(AutomationSettings.FieldClearMethod.allCases, id: \.self) { method in
+                        Text(method.rawValue).tag(method)
+                    }
+                }
+            }
+
+            Toggle("Tab Between Fields", isOn: $vm.automationSettings.tabBetweenFields).tint(accentColor)
+            Toggle("Click Field Before Typing", isOn: $vm.automationSettings.clickFieldBeforeTyping).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.verifyFieldValueAfterTyping) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Verify Value After Typing")
+                    Text("Read back field value to confirm input was accepted").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.verifyFieldValueAfterTyping {
+                Toggle("Retype on Verification Failure", isOn: $vm.automationSettings.retypeOnVerificationFailure).tint(.orange)
+                if vm.automationSettings.retypeOnVerificationFailure {
+                    Stepper("Max Retype Attempts: \(vm.automationSettings.maxRetypeAttempts)", value: $vm.automationSettings.maxRetypeAttempts, in: 1...5)
+                }
+            }
+
+            Toggle("Password Unmask Check", isOn: $vm.automationSettings.passwordFieldUnmaskCheck).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.autoDetectRememberMe) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Detect \"Remember Me\"")
+                    Text("Find and interact with remember-me checkboxes").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.autoDetectRememberMe {
+                Toggle(isOn: $vm.automationSettings.uncheckRememberMe) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Uncheck Remember Me")
+                        Text("Ensure remember-me is unchecked for clean sessions").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.orange)
+            }
+
+            Toggle(isOn: $vm.automationSettings.dismissAutofillSuggestions) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Dismiss Autofill Suggestions")
+                    Text("Close browser autofill popups that obscure fields").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.handlePasswordManagers) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Handle Password Managers")
+                    Text("Dismiss third-party password manager overlays").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+        } header: {
+            Label("Form Interaction", systemImage: "rectangle.and.pencil.and.ellipsis")
+        } footer: {
+            Text("Advanced options for how form fields are interacted with — clearing, verification, and handling autofill interference.")
+        }
+    }
+
+    // MARK: - Login Button Detection
+
+    private var loginButtonSection: some View {
+        Group {
+        Section {
+            Picker("Detection Mode", selection: $vm.automationSettings.loginButtonDetectionMode) {
+                ForEach(AutomationSettings.ButtonDetectionMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+
+            Picker("Click Method", selection: $vm.automationSettings.loginButtonClickMethod) {
+                ForEach(AutomationSettings.ButtonClickMethod.allCases, id: \.self) { method in
+                    Text(method.rawValue).tag(method)
+                }
+            }
+
+            if vm.automationSettings.loginButtonDetectionMode == .cssSelector || vm.automationSettings.loginButtonDetectionMode == .hybrid {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Custom CSS Selector").font(.subheadline)
+                    TextField("e.g. #loginBtn, .submit-button", text: $vm.automationSettings.loginButtonCustomSelector)
+                        .font(.system(.caption, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+
+            Button {
+                showButtonTextEditor = true
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Button Text Matches")
+                        Text("\(vm.automationSettings.loginButtonTextMatches.count) keywords configured").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+
+            HStack {
+                Text("Confidence Threshold")
+                Spacer()
+                Text("\(Int(vm.automationSettings.loginButtonConfidenceThreshold * 100))%")
+                    .font(.system(.caption, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $vm.automationSettings.loginButtonConfidenceThreshold, in: 0.2...1.0, step: 0.05)
+                .tint(accentColor)
+
+            Stepper("Max Candidates: \(vm.automationSettings.loginButtonMaxCandidates)", value: $vm.automationSettings.loginButtonMaxCandidates, in: 1...15)
+            Stepper("Min Button Size: \(vm.automationSettings.loginButtonMinSizePx)px", value: $vm.automationSettings.loginButtonMinSizePx, in: 5...80, step: 5)
+        } header: {
+            Label("Login Button Detection", systemImage: "hand.tap.fill")
+        } footer: {
+            Text("How the login/submit button is found on the page. Hybrid tries CSS selectors first, then text match, then Vision ML.")
+        }
+
+        Section {
+            Toggle(isOn: $vm.automationSettings.loginButtonScrollIntoView) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Scroll Into View")
+                    Text("Scroll page to make button visible before clicking").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.loginButtonWaitForEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wait for Enabled")
+                    Text("Wait until button is not disabled before clicking").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.loginButtonWaitForEnabled {
+                Stepper("Enabled Timeout: \(vm.automationSettings.loginButtonWaitForEnabledTimeoutMs)ms", value: $vm.automationSettings.loginButtonWaitForEnabledTimeoutMs, in: 1000...15000, step: 500)
+            }
+
+            Toggle("Visibility Check", isOn: $vm.automationSettings.loginButtonVisibilityCheck).tint(accentColor)
+            Toggle("Focus Before Click", isOn: $vm.automationSettings.loginButtonFocusBeforeClick).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.loginButtonHoverBeforeClick) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hover Before Click")
+                    Text("Simulate mouse hover to trigger hover states").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.loginButtonHoverBeforeClick {
+                Stepper("Hover Duration: \(vm.automationSettings.loginButtonHoverDurationMs)ms", value: $vm.automationSettings.loginButtonHoverDurationMs, in: 50...1000, step: 50)
+            }
+
+            Toggle(isOn: $vm.automationSettings.loginButtonDoubleClickGuard) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Double-Click Guard")
+                    Text("Prevent accidental duplicate submissions").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.orange)
+
+            if vm.automationSettings.loginButtonDoubleClickGuard {
+                Stepper("Guard Window: \(vm.automationSettings.loginButtonDoubleClickWindowMs)ms", value: $vm.automationSettings.loginButtonDoubleClickWindowMs, in: 500...5000, step: 250)
+            }
+
+            Toggle(isOn: $vm.automationSettings.loginButtonClickOffsetJitter) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Click Offset Jitter")
+                    Text("Randomize click position within button bounds").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.loginButtonClickOffsetJitter {
+                Stepper("Max Offset: \(vm.automationSettings.loginButtonClickOffsetMaxPx)px", value: $vm.automationSettings.loginButtonClickOffsetMaxPx, in: 1...20)
+            }
+
+            Stepper("Pre-Click Delay: \(vm.automationSettings.loginButtonPreClickDelayMs)ms", value: $vm.automationSettings.loginButtonPreClickDelayMs, in: 0...2000, step: 50)
+            Stepper("Post-Click Delay: \(vm.automationSettings.loginButtonPostClickDelayMs)ms", value: $vm.automationSettings.loginButtonPostClickDelayMs, in: 0...3000, step: 50)
+        } header: {
+            Label("Button Click Behavior", systemImage: "cursorarrow.click.2")
+        } footer: {
+            Text("Fine-tune exactly how the login button is clicked — timing, position jitter, hover simulation, and double-click protection.")
+        }
+
+        Section {
+            Toggle("Enter Key Fallback", isOn: $vm.automationSettings.loginButtonEnterKeyFallback).tint(.orange)
+            Toggle("Form Submit Fallback", isOn: $vm.automationSettings.loginButtonFormSubmitFallback).tint(.orange)
+            Toggle("ARIA Label Match", isOn: $vm.automationSettings.loginButtonAriaLabelMatch).tint(.purple)
+            Toggle("Role Attribute Match", isOn: $vm.automationSettings.loginButtonRoleMatch).tint(.purple)
+            Toggle("Image Button Detection", isOn: $vm.automationSettings.loginButtonImageButtonDetection).tint(.purple)
+            Toggle("Shadow DOM Search", isOn: $vm.automationSettings.loginButtonShadowDOMSearch).tint(.indigo)
+            Toggle("Iframe Search", isOn: $vm.automationSettings.loginButtonIframeSearch).tint(.indigo)
+            Toggle("Vision ML Fallback", isOn: $vm.automationSettings.loginButtonVisionMLFallback).tint(.cyan)
+            Toggle("OCR Fallback", isOn: $vm.automationSettings.loginButtonOCRFallback).tint(.cyan)
+            Toggle("Coordinate Fallback", isOn: $vm.automationSettings.loginButtonCoordinateFallback).tint(.cyan)
+        } header: {
+            Label("Button Fallback Chain", systemImage: "arrow.triangle.branch")
+        } footer: {
+            Text("Fallback strategies when the primary button detection fails. Searched in order: ARIA → Role → Image → Shadow DOM → Iframe → Vision ML → OCR → Coordinates.")
+        }
+        } // Group
+    }
+
     // MARK: - Pattern Strategy
 
     private var patternStrategySection: some View {
@@ -334,6 +594,65 @@ struct AutomationSettingsView: View {
         }
     }
 
+    // MARK: - Time Delays
+
+    private var timeDelaysSection: some View {
+        Group {
+        Section {
+            Stepper("Pre-Navigation: \(vm.automationSettings.preNavigationDelayMs)ms", value: $vm.automationSettings.preNavigationDelayMs, in: 0...3000, step: 50)
+            Stepper("Post-Navigation: \(vm.automationSettings.postNavigationDelayMs)ms", value: $vm.automationSettings.postNavigationDelayMs, in: 0...5000, step: 100)
+            Stepper("Page Stabilization: \(vm.automationSettings.pageStabilizationDelayMs)ms", value: $vm.automationSettings.pageStabilizationDelayMs, in: 0...5000, step: 100)
+            Stepper("AJAX Settle: \(vm.automationSettings.ajaxSettleDelayMs)ms", value: $vm.automationSettings.ajaxSettleDelayMs, in: 0...5000, step: 100)
+            Stepper("DOM Mutation Settle: \(vm.automationSettings.domMutationSettleMs)ms", value: $vm.automationSettings.domMutationSettleMs, in: 0...3000, step: 100)
+            Stepper("Animation Settle: \(vm.automationSettings.animationSettleDelayMs)ms", value: $vm.automationSettings.animationSettleDelayMs, in: 0...3000, step: 100)
+            Stepper("Redirect Follow: \(vm.automationSettings.redirectFollowDelayMs)ms", value: $vm.automationSettings.redirectFollowDelayMs, in: 0...3000, step: 100)
+        } header: {
+            Label("Navigation Delays", systemImage: "clock.arrow.circlepath")
+        } footer: {
+            Text("Delays applied around page navigation, DOM settling, and redirect handling.")
+        }
+
+        Section {
+            Stepper("Pre-Typing: \(vm.automationSettings.preTypingDelayMs)ms", value: $vm.automationSettings.preTypingDelayMs, in: 0...3000, step: 50)
+            Stepper("Post-Typing: \(vm.automationSettings.postTypingDelayMs)ms", value: $vm.automationSettings.postTypingDelayMs, in: 0...3000, step: 50)
+            Stepper("Pre-Submit: \(vm.automationSettings.preSubmitDelayMs)ms", value: $vm.automationSettings.preSubmitDelayMs, in: 0...5000, step: 50)
+            Stepper("Post-Submit: \(vm.automationSettings.postSubmitDelayMs)ms", value: $vm.automationSettings.postSubmitDelayMs, in: 0...5000, step: 100)
+            Stepper("Between Attempts: \(vm.automationSettings.betweenAttemptsDelayMs)ms", value: $vm.automationSettings.betweenAttemptsDelayMs, in: 0...10000, step: 250)
+            Stepper("Between Credentials: \(vm.automationSettings.betweenCredentialsDelayMs)ms", value: $vm.automationSettings.betweenCredentialsDelayMs, in: 0...10000, step: 250)
+        } header: {
+            Label("Action Delays", systemImage: "timer")
+        } footer: {
+            Text("Delays before/after typing, submitting, and between credential tests.")
+        }
+
+        Section {
+            Stepper("Global Pre-Action: \(vm.automationSettings.globalPreActionDelayMs)ms", value: $vm.automationSettings.globalPreActionDelayMs, in: 0...5000, step: 50)
+            Stepper("Global Post-Action: \(vm.automationSettings.globalPostActionDelayMs)ms", value: $vm.automationSettings.globalPostActionDelayMs, in: 0...5000, step: 50)
+            Stepper("CAPTCHA Detection: \(vm.automationSettings.captchaDetectionDelayMs)ms", value: $vm.automationSettings.captchaDetectionDelayMs, in: 500...10000, step: 250)
+            Stepper("Error Recovery: \(vm.automationSettings.errorRecoveryDelayMs)ms", value: $vm.automationSettings.errorRecoveryDelayMs, in: 0...10000, step: 250)
+            Stepper("Session Cooldown: \(vm.automationSettings.sessionCooldownDelayMs)ms", value: $vm.automationSettings.sessionCooldownDelayMs, in: 0...30000, step: 500)
+            Stepper("Proxy Rotation: \(vm.automationSettings.proxyRotationDelayMs)ms", value: $vm.automationSettings.proxyRotationDelayMs, in: 0...10000, step: 250)
+            Stepper("VPN Reconnect: \(vm.automationSettings.vpnReconnectDelayMs)ms", value: $vm.automationSettings.vpnReconnectDelayMs, in: 0...15000, step: 500)
+
+            Toggle(isOn: $vm.automationSettings.delayRandomizationEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Delay Randomization")
+                    Text("Add \u{00B1}variance to all delays for human-like timing").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.delayRandomizationEnabled {
+                Stepper("Randomization: \u{00B1}\(vm.automationSettings.delayRandomizationPercent)%", value: $vm.automationSettings.delayRandomizationPercent, in: 5...75, step: 5)
+            }
+        } header: {
+            Label("System & Recovery Delays", systemImage: "gauge.with.dots.needle.33percent")
+        } footer: {
+            Text("Global delays, error recovery pauses, and network rotation timing. Randomization adds variance to avoid detection patterns.")
+        }
+        } // Group
+    }
+
     // MARK: - Post-Submit Evaluation
 
     private var postSubmitEvalSection: some View {
@@ -353,6 +672,105 @@ struct AutomationSettingsView: View {
             Label("Post-Submit Evaluation", systemImage: "checklist.checked")
         } footer: {
             Text("Lenient = more likely to report success. Strict = requires stronger signals. Normal = balanced.")
+        }
+    }
+
+    // MARK: - MFA Handling
+
+    private var mfaHandlingSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.mfaDetectionEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MFA Detection")
+                    Text("Detect two-factor/verification prompts after login").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.mfaDetectionEnabled {
+                Stepper("Wait Timeout: \(vm.automationSettings.mfaWaitTimeoutSeconds)s", value: $vm.automationSettings.mfaWaitTimeoutSeconds, in: 5...120, step: 5)
+
+                Toggle(isOn: $vm.automationSettings.mfaAutoSkip) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Skip MFA")
+                        Text("Skip credentials that trigger MFA prompts").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.orange)
+
+                Toggle(isOn: $vm.automationSettings.mfaMarkAsTempDisabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Mark as Temp Disabled")
+                        Text("Flag MFA-triggered accounts as temporarily disabled").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.orange)
+
+                Button {
+                    showMFAKeywordEditor = true
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("MFA Keywords")
+                            Text("\(vm.automationSettings.mfaKeywords.count) keywords configured").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        } header: {
+            Label("MFA / 2FA Handling", systemImage: "lock.shield.fill")
+        } footer: {
+            Text("Controls how multi-factor authentication prompts are detected and handled during login automation.")
+        }
+    }
+
+    // MARK: - CAPTCHA Handling
+
+    private var captchaHandlingSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.captchaDetectionEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CAPTCHA Detection")
+                    Text("Detect reCAPTCHA, hCaptcha, and other challenge prompts").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.captchaDetectionEnabled {
+                Toggle(isOn: $vm.automationSettings.captchaAutoSkip) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Skip on CAPTCHA")
+                        Text("Skip credential and move to next when CAPTCHA detected").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.orange)
+
+                Toggle("Mark as Failed", isOn: $vm.automationSettings.captchaMarkAsFailed).tint(.red)
+
+                Stepper("Wait Timeout: \(vm.automationSettings.captchaWaitTimeoutSeconds)s", value: $vm.automationSettings.captchaWaitTimeoutSeconds, in: 5...60, step: 5)
+
+                Toggle("Iframe Detection", isOn: $vm.automationSettings.captchaIframeDetection).tint(.purple)
+                Toggle("Image Detection", isOn: $vm.automationSettings.captchaImageDetection).tint(.purple)
+
+                Button {
+                    showCaptchaKeywordEditor = true
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("CAPTCHA Keywords")
+                            Text("\(vm.automationSettings.captchaKeywords.count) keywords configured").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        } header: {
+            Label("CAPTCHA Handling", systemImage: "puzzlepiece.fill")
+        } footer: {
+            Text("How CAPTCHA challenges are detected and handled. Auto-skip moves to the next credential instead of waiting.")
         }
     }
 
@@ -384,6 +802,88 @@ struct AutomationSettingsView: View {
             Label("Retry / Requeue", systemImage: "arrow.counterclockwise")
         } footer: {
             Text("Controls when failed tests are requeued vs marked final, and pauses between retry cycles.")
+        }
+    }
+
+    // MARK: - Error Classification
+
+    private var errorClassificationSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.networkErrorAutoRetry) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Network Error Auto-Retry")
+                    Text("Automatically retry on network failures").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            Toggle("SSL Error Auto-Retry", isOn: $vm.automationSettings.sslErrorAutoRetry).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.http403MarkAsBlocked) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("HTTP 403 → Mark Blocked")
+                    Text("Treat 403 Forbidden as IP/account blocked").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.red)
+
+            Stepper("HTTP 429 Retry After: \(vm.automationSettings.http429RetryAfterSeconds)s", value: $vm.automationSettings.http429RetryAfterSeconds, in: 10...300, step: 10)
+
+            Toggle("HTTP 5xx Auto-Retry", isOn: $vm.automationSettings.http5xxAutoRetry).tint(accentColor)
+            Toggle("Connection Reset Auto-Retry", isOn: $vm.automationSettings.connectionResetAutoRetry).tint(accentColor)
+            Toggle("DNS Failure Auto-Retry", isOn: $vm.automationSettings.dnsFailureAutoRetry).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.classifyUnknownAsUnsure) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Unknown → Unsure")
+                    Text("Classify unrecognized errors as unsure instead of failed").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.orange)
+        } header: {
+            Label("Error Classification", systemImage: "exclamationmark.triangle.fill")
+        } footer: {
+            Text("How HTTP errors and network failures are classified and whether they trigger automatic retries.")
+        }
+    }
+
+    // MARK: - Session Management
+
+    private var sessionManagementSection: some View {
+        Section {
+            Picker("Session Isolation", selection: $vm.automationSettings.sessionIsolation) {
+                ForEach(AutomationSettings.SessionIsolationMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+
+            Toggle("Clear Cookies", isOn: $vm.automationSettings.clearCookiesBetweenAttempts).tint(accentColor)
+            Toggle("Clear Local Storage", isOn: $vm.automationSettings.clearLocalStorageBetweenAttempts).tint(accentColor)
+            Toggle("Clear Session Storage", isOn: $vm.automationSettings.clearSessionStorageBetweenAttempts).tint(accentColor)
+            Toggle("Clear Cache", isOn: $vm.automationSettings.clearCacheBetweenAttempts).tint(accentColor)
+            Toggle("Clear IndexedDB", isOn: $vm.automationSettings.clearIndexedDBBetweenAttempts).tint(accentColor)
+
+            Toggle(isOn: $vm.automationSettings.freshWebViewPerAttempt) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Fresh WebView Per Attempt")
+                    Text("Destroy and recreate WKWebView for each credential").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.orange)
+
+            if !vm.automationSettings.freshWebViewPerAttempt {
+                Stepper("WebView Pool Size: \(vm.automationSettings.reuseWebViewPoolSize)", value: $vm.automationSettings.reuseWebViewPoolSize, in: 1...10)
+            }
+
+            Stepper("Memory Limit: \(vm.automationSettings.webViewMemoryLimitMB)MB", value: $vm.automationSettings.webViewMemoryLimitMB, in: 64...1024, step: 64)
+
+            Toggle("JavaScript Enabled", isOn: $vm.automationSettings.webViewJSEnabled).tint(accentColor)
+            Toggle("Image Loading", isOn: $vm.automationSettings.webViewImageLoadingEnabled).tint(accentColor)
+            Toggle("Plugins Enabled", isOn: $vm.automationSettings.webViewPluginsEnabled).tint(accentColor)
+        } header: {
+            Label("Session Management", systemImage: "server.rack")
+        } footer: {
+            Text("Controls WebView lifecycle, data isolation between attempts, and resource management. Full isolation is most secure but slower.")
         }
     }
 
@@ -442,6 +942,56 @@ struct AutomationSettingsView: View {
             Label("Human Simulation", systemImage: "figure.walk")
         } footer: {
             Text("Controls how human-like the automation behaves. Gaussian timing produces more realistic patterns.")
+        }
+    }
+
+    // MARK: - Viewport & Window
+
+    private var viewportWindowSection: some View {
+        Section {
+            Stepper("Width: \(vm.automationSettings.viewportWidth)px", value: $vm.automationSettings.viewportWidth, in: 320...2560, step: 10)
+            Stepper("Height: \(vm.automationSettings.viewportHeight)px", value: $vm.automationSettings.viewportHeight, in: 480...1440, step: 10)
+
+            Toggle(isOn: $vm.automationSettings.randomizeViewportSize) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Randomize Viewport Size")
+                    Text("Add variance to viewport dimensions per session").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.randomizeViewportSize {
+                Stepper("Size Variance: \u{00B1}\(vm.automationSettings.viewportSizeVariancePx)px", value: $vm.automationSettings.viewportSizeVariancePx, in: 10...200, step: 10)
+            }
+
+            HStack {
+                Text("Device Scale Factor")
+                Spacer()
+                Picker("", selection: $vm.automationSettings.deviceScaleFactor) {
+                    Text("1x").tag(1.0)
+                    Text("2x").tag(2.0)
+                    Text("3x").tag(3.0)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+            }
+
+            Toggle(isOn: $vm.automationSettings.mobileViewportEmulation) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mobile Viewport Emulation")
+                    Text("Emulate a mobile device viewport").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.purple)
+
+            if vm.automationSettings.mobileViewportEmulation {
+                Stepper("Mobile Width: \(vm.automationSettings.mobileViewportWidth)px", value: $vm.automationSettings.mobileViewportWidth, in: 320...430, step: 5)
+                Stepper("Mobile Height: \(vm.automationSettings.mobileViewportHeight)px", value: $vm.automationSettings.mobileViewportHeight, in: 568...932, step: 5)
+            }
+        } header: {
+            Label("Viewport & Window", systemImage: "rectangle.dashed")
+        } footer: {
+            Text("Control the virtual browser viewport dimensions. Randomization helps avoid fingerprint-based detection.")
         }
     }
 
@@ -818,5 +1368,73 @@ struct URLFlowAssignmentView: View {
             .foregroundStyle(color)
             .padding(.horizontal, 5).padding(.vertical, 2)
             .background(color.opacity(0.12)).clipShape(Capsule())
+    }
+}
+
+// MARK: - Keyword List Editor
+
+struct KeywordListEditor: View {
+    let title: String
+    @Binding var keywords: [String]
+    @Environment(\.dismiss) private var dismiss
+    @State private var newKeyword: String = ""
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    TextField("Add keyword…", text: $newKeyword)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        let trimmed = newKeyword.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.isEmpty, !keywords.contains(trimmed) else { return }
+                        keywords.append(trimmed)
+                        newKeyword = ""
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    .disabled(newKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            Section {
+                if keywords.isEmpty {
+                    Text("No keywords configured")
+                        .foregroundStyle(.secondary)
+                        .italic()
+                } else {
+                    ForEach(keywords, id: \.self) { keyword in
+                        HStack {
+                            Text(keyword)
+                                .font(.system(.subheadline, design: .monospaced))
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                keywords.removeAll { $0 == keyword }
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+                    .onMove { source, destination in
+                        keywords.move(fromOffsets: source, toOffset: destination)
+                    }
+                }
+            } header: {
+                Text("\(keywords.count) keyword\(keywords.count == 1 ? "" : "s")")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
     }
 }
