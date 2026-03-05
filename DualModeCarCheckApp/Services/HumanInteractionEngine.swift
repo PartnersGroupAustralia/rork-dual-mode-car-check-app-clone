@@ -7,6 +7,11 @@ nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
     case execCommandInsert = "ExecCommand Insert"
     case slowDeliberateTyper = "Slow Deliberate Typer"
     case mobileTouchBurst = "Mobile Touch Burst"
+    case calibratedDirect = "Calibrated Direct"
+    case calibratedTyping = "Calibrated Typing"
+    case formSubmitDirect = "Form Submit Direct"
+    case coordinateClick = "Coordinate Click"
+    case reactNativeSetter = "React Native Setter"
 
     var description: String {
         switch self {
@@ -20,6 +25,16 @@ nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
             "Very slow typing with long pauses, occasional backspace corrections, then manual click"
         case .mobileTouchBurst:
             "Touch events for field selection → fast burst typing → touch submit"
+        case .calibratedDirect:
+            "Use calibrated CSS selectors to fill fields and click button directly"
+        case .calibratedTyping:
+            "Use calibrated selectors to focus, then char-by-char type with Enter submit"
+        case .formSubmitDirect:
+            "Fill via nativeInputValueSetter → form.requestSubmit() or form.submit()"
+        case .coordinateClick:
+            "Use calibrated pixel coordinates to click email, password, and login button"
+        case .reactNativeSetter:
+            "React-compatible: Object.defineProperty setter + InputEvent with inputType"
         }
     }
 }
@@ -74,6 +89,16 @@ class HumanInteractionEngine {
             result = await executeSlowDeliberateTyper(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         case .mobileTouchBurst:
             result = await executeMobileTouchBurst(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .calibratedDirect:
+            result = await executeCalibratedDirect(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .calibratedTyping:
+            result = await executeCalibratedTyping(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .formSubmitDirect:
+            result = await executeFormSubmitDirect(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .coordinateClick:
+            result = await executeCoordinateClick(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .reactNativeSetter:
+            result = await executeReactNativeSetter(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         }
 
         let elapsed = Date().timeIntervalSince(startTime)
@@ -625,6 +650,401 @@ class HumanInteractionEngine {
         }
 
         return true
+    }
+
+    // MARK: - Pattern 6: Calibrated Direct
+    private func executeCalibratedDirect(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .calibratedDirect)
+        let cal = LoginCalibrationService.shared.calibrationFor(url: sessionId)
+
+        let fillEmailJS = buildCalibratedFillJS(calibration: cal, fieldType: "email", value: username)
+        let emailResult = await executeJS(fillEmailJS)
+        result.usernameFilled = emailResult == "CAL_OK" || emailResult == "CAL_MISMATCH" || emailResult == "LEGACY_OK"
+        if !result.usernameFilled {
+            let legacyFocus = "(function(){ \(buildFindEmailFieldJS()) if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            let f = await executeJS(legacyFocus)
+            if f != "NOT_FOUND" {
+                let typed = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 40, maxDelayMs: 140)
+                result.usernameFilled = typed
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 500)))
+
+        let fillPassJS = buildCalibratedFillJS(calibration: cal, fieldType: "password", value: password)
+        let passResult = await executeJS(fillPassJS)
+        result.passwordFilled = passResult == "CAL_OK" || passResult == "CAL_MISMATCH" || passResult == "LEGACY_OK"
+        if !result.passwordFilled {
+            let legacyFocus = "(function(){ var el = document.querySelector('input[type=\"password\"]'); if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            let f = await executeJS(legacyFocus)
+            if f != "NOT_FOUND" {
+                let typed = await typeCharByChar(text: password, executeJS: executeJS, sessionId: sessionId, fieldName: "password", minDelayMs: 45, maxDelayMs: 150)
+                result.passwordFilled = typed
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 300, maxMs: 700)))
+
+        let clickResult = await humanClickLoginButton(executeJS: executeJS, sessionId: sessionId)
+        result.submitTriggered = clickResult
+        result.submitMethod = "Calibrated direct fill + click"
+        return result
+    }
+
+    // MARK: - Pattern 7: Calibrated Typing
+    private func executeCalibratedTyping(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .calibratedTyping)
+        let cal = LoginCalibrationService.shared.calibrationFor(url: sessionId)
+
+        let focusEmailJS = buildCalibratedFocusJS(calibration: cal, fieldType: "email")
+        let focused = await executeJS(focusEmailJS)
+        if focused == "NOT_FOUND" {
+            let legacyFocus = "(function(){ \(buildFindEmailFieldJS()) if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            _ = await executeJS(legacyFocus)
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 150, maxMs: 400)))
+        let userTyped = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 45, maxDelayMs: 160)
+        result.usernameFilled = userTyped
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 500)))
+
+        let focusPassJS = buildCalibratedFocusJS(calibration: cal, fieldType: "password")
+        let passFocused = await executeJS(focusPassJS)
+        if passFocused == "NOT_FOUND" {
+            let legacyFocus = "(function(){ var el = document.querySelector('input[type=\"password\"]'); if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            _ = await executeJS(legacyFocus)
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 150, maxMs: 400)))
+        let passTyped = await typeCharByChar(text: password, executeJS: executeJS, sessionId: sessionId, fieldName: "password", minDelayMs: 50, maxDelayMs: 170)
+        result.passwordFilled = passTyped
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 600)))
+
+        let enterJS = """
+        (function(){
+            var active = document.activeElement;
+            if (!active) active = document.querySelector('input[type="password"]');
+            if (active) {
+                active.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                active.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                active.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                return 'ENTER_PRESSED';
+            }
+            return 'NO_ACTIVE';
+        })()
+        """
+        let enterResult = await executeJS(enterJS)
+        result.submitTriggered = enterResult == "ENTER_PRESSED"
+        result.submitMethod = "Calibrated focus + typing + Enter"
+        return result
+    }
+
+    // MARK: - Pattern 8: Form Submit Direct
+    private func executeFormSubmitDirect(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .formSubmitDirect)
+
+        let fillBothJS = """
+        (function(){
+            var emailField = document.querySelector('input[type="email"]')
+                || document.querySelector('input[autocomplete="email"]')
+                || document.querySelector('input[autocomplete="username"]')
+                || document.querySelector('input[name="email"]')
+                || document.querySelector('input[name="username"]')
+                || document.querySelector('input[type="text"]');
+            var passField = document.querySelector('input[type="password"]');
+            if (!emailField || !passField) return JSON.stringify({email:false, pass:false});
+
+            function setValue(el, val) {
+                el.focus();
+                var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, val); }
+                else { el.value = val; }
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+                el.dispatchEvent(new Event('blur', {bubbles:true}));
+            }
+
+            setValue(emailField, '\(username.replacingOccurrences(of: "'", with: "\\'"))');
+            setValue(passField, '\(password.replacingOccurrences(of: "'", with: "\\'"))');
+            return JSON.stringify({email: emailField.value.length > 0, pass: passField.value.length > 0});
+        })()
+        """
+        if let rawResult = await executeJS(fillBothJS),
+           let data = rawResult.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Bool] {
+            result.usernameFilled = json["email"] ?? false
+            result.passwordFilled = json["pass"] ?? false
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 500)))
+
+        let submitJS = """
+        (function(){
+            var forms = document.querySelectorAll('form');
+            for (var i = 0; i < forms.length; i++) {
+                if (forms[i].querySelector('input[type="password"]')) {
+                    try { forms[i].requestSubmit(); return 'REQUEST_SUBMIT'; } catch(e){}
+                    try { forms[i].submit(); return 'FORM_SUBMIT'; } catch(e){}
+                }
+            }
+            if (forms.length > 0) {
+                try { forms[0].requestSubmit(); return 'REQUEST_SUBMIT_FIRST'; } catch(e){}
+                try { forms[0].submit(); return 'FORM_SUBMIT_FIRST'; } catch(e){}
+            }
+            return 'FAILED';
+        })()
+        """
+        let submitResult = await executeJS(submitJS)
+        result.submitTriggered = submitResult != "FAILED" && submitResult != nil
+        result.submitMethod = "Form submit direct: \(submitResult ?? "nil")"
+        return result
+    }
+
+    // MARK: - Pattern 9: Coordinate Click
+    private func executeCoordinateClick(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .coordinateClick)
+        let cal = LoginCalibrationService.shared.calibrationFor(url: sessionId)
+
+        if let emailCoords = cal?.emailField?.coordinates {
+            let clickFocusJS = """
+            (function(){
+                var el = document.elementFromPoint(\(Int(emailCoords.x)), \(Int(emailCoords.y)));
+                if (!el) return 'NO_ELEMENT';
+                if (el.tagName !== 'INPUT') { var inp = el.querySelector('input'); if (inp) el = inp; }
+                el.focus(); el.click(); el.value = '';
+                el.dispatchEvent(new Event('focus', {bubbles:true}));
+                return 'FOCUSED';
+            })()
+            """
+            let f = await executeJS(clickFocusJS)
+            if f != "NO_ELEMENT" {
+                try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 100, maxMs: 300)))
+                let typed = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 40, maxDelayMs: 140)
+                result.usernameFilled = typed
+            }
+        } else {
+            let focusJS = "(function(){ \(buildFindEmailFieldJS()) if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            let f = await executeJS(focusJS)
+            if f != "NOT_FOUND" {
+                try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 100, maxMs: 300)))
+                let typed = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 40, maxDelayMs: 140)
+                result.usernameFilled = typed
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 500)))
+
+        if let passCoords = cal?.passwordField?.coordinates {
+            let clickPassJS = """
+            (function(){
+                var el = document.elementFromPoint(\(Int(passCoords.x)), \(Int(passCoords.y)));
+                if (!el) return 'NO_ELEMENT';
+                if (el.tagName !== 'INPUT') { var inp = el.querySelector('input'); if (inp) el = inp; }
+                el.focus(); el.click(); el.value = '';
+                el.dispatchEvent(new Event('focus', {bubbles:true}));
+                return 'FOCUSED';
+            })()
+            """
+            let f = await executeJS(clickPassJS)
+            if f != "NO_ELEMENT" {
+                try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 100, maxMs: 300)))
+                let typed = await typeCharByChar(text: password, executeJS: executeJS, sessionId: sessionId, fieldName: "password", minDelayMs: 45, maxDelayMs: 150)
+                result.passwordFilled = typed
+            }
+        } else {
+            let focusJS = "(function(){ var el = document.querySelector('input[type=\"password\"]'); if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+            let f = await executeJS(focusJS)
+            if f != "NOT_FOUND" {
+                try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 100, maxMs: 300)))
+                let typed = await typeCharByChar(text: password, executeJS: executeJS, sessionId: sessionId, fieldName: "password", minDelayMs: 45, maxDelayMs: 150)
+                result.passwordFilled = typed
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 300, maxMs: 700)))
+
+        if let btnCoords = cal?.loginButton?.coordinates {
+            let clickBtnJS = """
+            (function(){
+                var cx = \(Int(btnCoords.x)); var cy = \(Int(btnCoords.y));
+                var el = document.elementFromPoint(cx, cy);
+                if (!el) return 'NO_ELEMENT';
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,buttons:1}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+                try { el.click(); } catch(e){}
+                return 'COORD_CLICKED:' + el.tagName;
+            })()
+            """
+            let r = await executeJS(clickBtnJS)
+            result.submitTriggered = r?.hasPrefix("COORD_CLICKED") == true
+            result.submitMethod = "Coordinate click: \(r ?? "nil")"
+        } else {
+            let clickResult = await humanClickLoginButton(executeJS: executeJS, sessionId: sessionId)
+            result.submitTriggered = clickResult
+            result.submitMethod = "Coordinate fallback click"
+        }
+
+        return result
+    }
+
+    // MARK: - Pattern 10: React Native Setter
+    private func executeReactNativeSetter(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .reactNativeSetter)
+
+        let escapedUser = username.replacingOccurrences(of: "'", with: "\\\'")
+        let escapedPass = password.replacingOccurrences(of: "'", with: "\\\'")
+
+        let reactFillJS = """
+        (function(){
+            function reactSet(el, val) {
+                if (!el) return false;
+                el.focus();
+                var tracker = el._valueTracker;
+                var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, val); }
+                else { el.value = val; }
+                if (tracker) { tracker.setValue(''); }
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                var inputEvent = new InputEvent('input', {bubbles: true, cancelable: false, inputType: 'insertText', data: val});
+                el.dispatchEvent(inputEvent);
+                return el.value === val || el.value.length > 0;
+            }
+
+            var emailField = document.querySelector('input[type="email"]')
+                || document.querySelector('input[autocomplete="email"]')
+                || document.querySelector('input[name="email"]')
+                || document.querySelector('input[name="username"]')
+                || document.querySelector('input[type="text"]');
+            var passField = document.querySelector('input[type="password"]');
+
+            var emailOK = reactSet(emailField, '\(escapedUser)');
+            var passOK = reactSet(passField, '\(escapedPass)');
+            return JSON.stringify({email: emailOK, pass: passOK});
+        })()
+        """
+        if let rawResult = await executeJS(reactFillJS),
+           let data = rawResult.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Bool] {
+            result.usernameFilled = json["email"] ?? false
+            result.passwordFilled = json["pass"] ?? false
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 300, maxMs: 700)))
+
+        let clickResult = await humanClickLoginButton(executeJS: executeJS, sessionId: sessionId)
+        result.submitTriggered = clickResult
+        result.submitMethod = "React native setter + click"
+
+        if !result.submitTriggered {
+            let enterJS = """
+            (function(){
+                var pass = document.querySelector('input[type="password"]');
+                if (pass) {
+                    pass.focus();
+                    pass.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                    pass.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+                    pass.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                    return 'ENTER';
+                }
+                return 'NO_FIELD';
+            })()
+            """
+            let enterR = await executeJS(enterJS)
+            result.submitTriggered = enterR == "ENTER"
+            result.submitMethod = "React native setter + Enter"
+        }
+
+        return result
+    }
+
+    // MARK: - Calibration Helpers
+
+    private func buildCalibratedFillJS(calibration: LoginCalibrationService.URLCalibration?, fieldType: String, value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "\\\'")
+        var selectors: [String] = []
+
+        if let cal = calibration {
+            let mapping = fieldType == "email" ? cal.emailField : cal.passwordField
+            if let m = mapping {
+                if !m.cssSelector.isEmpty { selectors.append(m.cssSelector) }
+                selectors.append(contentsOf: m.fallbackSelectors)
+            }
+        }
+
+        if fieldType == "email" {
+            selectors.append(contentsOf: ["input[type='email']", "input[autocomplete='email']", "input[name='email']", "input[name='username']", "input[type='text']"])
+        } else {
+            selectors.append(contentsOf: ["input[type='password']", "input[autocomplete='current-password']", "input[name='password']"])
+        }
+
+        let selectorJSON = selectors.map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))'" }.joined(separator: ",")
+
+        return """
+        (function(){
+            var selectors = [\(selectorJSON)];
+            for (var i = 0; i < selectors.length; i++) {
+                try {
+                    var el = document.querySelector(selectors[i]);
+                    if (el && !el.disabled) {
+                        el.focus();
+                        el.value = '';
+                        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                        if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escaped)'); }
+                        else { el.value = '\(escaped)'; }
+                        el.dispatchEvent(new Event('input', {bubbles:true}));
+                        el.dispatchEvent(new Event('change', {bubbles:true}));
+                        if (el.value === '\(escaped)') return 'CAL_OK';
+                        return 'CAL_MISMATCH';
+                    }
+                } catch(e) {}
+            }
+            return 'NOT_FOUND';
+        })()
+        """
+    }
+
+    private func buildCalibratedFocusJS(calibration: LoginCalibrationService.URLCalibration?, fieldType: String) -> String {
+        var selectors: [String] = []
+
+        if let cal = calibration {
+            let mapping = fieldType == "email" ? cal.emailField : cal.passwordField
+            if let m = mapping {
+                if !m.cssSelector.isEmpty { selectors.append(m.cssSelector) }
+                selectors.append(contentsOf: m.fallbackSelectors)
+            }
+        }
+
+        if fieldType == "email" {
+            selectors.append(contentsOf: ["input[type='email']", "input[name='email']", "input[name='username']", "input[type='text']"])
+        } else {
+            selectors.append(contentsOf: ["input[type='password']", "input[name='password']"])
+        }
+
+        let selectorJSON = selectors.map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))'" }.joined(separator: ",")
+
+        return """
+        (function(){
+            var selectors = [\(selectorJSON)];
+            for (var i = 0; i < selectors.length; i++) {
+                try {
+                    var el = document.querySelector(selectors[i]);
+                    if (el && !el.disabled) {
+                        el.scrollIntoView({behavior:'instant',block:'center'});
+                        el.focus(); el.click(); el.value = '';
+                        el.dispatchEvent(new Event('focus', {bubbles:true}));
+                        return 'FOCUSED';
+                    }
+                } catch(e) {}
+            }
+            return 'NOT_FOUND';
+        })()
+        """
     }
 
     // MARK: - Login Button Click

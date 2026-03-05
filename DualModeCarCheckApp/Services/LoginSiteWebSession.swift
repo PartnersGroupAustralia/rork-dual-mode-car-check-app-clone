@@ -38,7 +38,7 @@ nonisolated enum LoginTargetSite: String, CaseIterable, Sendable {
 
 @MainActor
 class LoginSiteWebSession: NSObject {
-    private var webView: WKWebView?
+    private(set) var webView: WKWebView?
     private let sessionId: UUID = UUID()
     private var pageLoadContinuation: CheckedContinuation<Bool, Never>?
     private var isPageLoaded: Bool = false
@@ -277,7 +277,116 @@ class LoginSiteWebSession: NSObject {
         """
     }
 
-    func fillUsername(_ username: String) async -> (success: Bool, detail: String) {
+    private func escapeForJS(_ str: String) -> String {
+        str.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+    }
+
+    private func calibratedFillJS(selector: String, value: String) -> String {
+        let safeSel = escapeForJS(selector)
+        let safeVal = escapeForJS(value)
+        return "(function(){ try { var el = document.querySelector('" + safeSel + "'); if (!el) return 'CAL_NOT_FOUND'; el.focus(); el.value = ''; var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); if (ns && ns.set) { ns.set.call(el, '" + safeVal + "'); } else { el.value = '" + safeVal + "'; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return el.value.length > 0 ? 'CAL_OK' : 'CAL_MISMATCH'; } catch(e) { return 'CAL_ERROR'; } })()"
+    }
+
+    private func calibratedClickJS(selector: String) -> String {
+        let safeSel = escapeForJS(selector)
+        return "(function(){ try { var el = document.querySelector('" + safeSel + "'); if (!el) return 'CAL_NOT_FOUND'; el.scrollIntoView({behavior:'instant',block:'center'}); var r = el.getBoundingClientRect(); var cx = r.left+r.width*0.5; var cy = r.top+r.height*0.5; el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1})); el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,buttons:1})); el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0})); el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0})); el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0})); el.click(); return 'CAL_CLICKED:' + (el.textContent||'').trim().substring(0,20); } catch(e) { return 'CAL_ERROR'; } })()"
+    }
+
+    func fillUsernameCalibrated(_ username: String, calibration: LoginCalibrationService.URLCalibration?) async -> (success: Bool, detail: String) {
+        if let cal = calibration, let emailMap = cal.emailField, !emailMap.cssSelector.isEmpty {
+            let allSelectors = [emailMap.cssSelector] + emailMap.fallbackSelectors
+            for selector in allSelectors {
+                let calJS = calibratedFillJS(selector: selector, value: username)
+                let result = await executeJS(calJS)
+                if result == "CAL_OK" || result == "CAL_MISMATCH" {
+                    return (true, "Username filled via calibrated selector: \(selector)")
+                }
+            }
+            if let coords = emailMap.coordinates {
+                let coordResult = await fillFieldAtCoordinates(coords, value: username, fieldName: "email")
+                if coordResult.success { return coordResult }
+            }
+        }
+        return await fillUsername(username)
+    }
+
+    func fillPasswordCalibrated(_ password: String, calibration: LoginCalibrationService.URLCalibration?) async -> (success: Bool, detail: String) {
+        if let cal = calibration, let passMap = cal.passwordField, !passMap.cssSelector.isEmpty {
+            let allSelectors = [passMap.cssSelector] + passMap.fallbackSelectors
+            for selector in allSelectors {
+                let calJS = calibratedFillJS(selector: selector, value: password)
+                let result = await executeJS(calJS)
+                if result == "CAL_OK" || result == "CAL_MISMATCH" {
+                    return (true, "Password filled via calibrated selector: \(selector)")
+                }
+            }
+            if let coords = passMap.coordinates {
+                let coordResult = await fillFieldAtCoordinates(coords, value: password, fieldName: "password")
+                if coordResult.success { return coordResult }
+            }
+        }
+        return await fillPassword(password)
+    }
+
+    func clickLoginButtonCalibrated(calibration: LoginCalibrationService.URLCalibration?) async -> (success: Bool, detail: String) {
+        if let cal = calibration, let btnMap = cal.loginButton {
+            let allSelectors = [btnMap.cssSelector] + btnMap.fallbackSelectors
+            for selector in allSelectors where !selector.isEmpty {
+                let calClickJS = calibratedClickJS(selector: selector)
+                let result = await executeJS(calClickJS)
+                if let result, result.hasPrefix("CAL_CLICKED") {
+                    return (true, "Login clicked via calibrated selector: \(result)")
+                }
+            }
+            if let coords = btnMap.coordinates {
+                let cx = Int(coords.x)
+                let cy = Int(coords.y)
+                let coordJS = "(function(){var cx=\(cx);var cy=\(cy);var el=document.elementFromPoint(cx,cy);if(!el)return'NO_EL';el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0,buttons:1}));el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));try{el.click();}catch(e){}return'CAL_COORD:'+el.tagName;})()"
+                let result = await executeJS(coordJS)
+                if let result, result.hasPrefix("CAL_COORD") {
+                    return (true, "Login clicked via coordinates: \(result)")
+                }
+            }
+        }
+        return await clickLoginButton()
+    }
+
+    func runDeepDOMProbe() async -> DOMProbeResult {
+        let coordinator = CalibrationWebViewCoordinator()
+        coordinator.webView = webView
+        return await coordinator.runDeepDOMProbe()
+    }
+
+    func autoCalibrate() async -> LoginCalibrationService.URLCalibration? {
+        let probe = await runDeepDOMProbe()
+        guard probe.emailSelector != nil || probe.passwordSelector != nil else { return nil }
+        var cal = LoginCalibrationService.URLCalibration(urlPattern: targetURL.host ?? targetURL.absoluteString)
+        if let emailSel = probe.emailSelector {
+            cal.emailField = LoginCalibrationService.ElementMapping(cssSelector: emailSel, fallbackSelectors: probe.emailFallbacks)
+        }
+        if let passSel = probe.passwordSelector {
+            cal.passwordField = LoginCalibrationService.ElementMapping(cssSelector: passSel, fallbackSelectors: probe.passwordFallbacks)
+        }
+        if let btnSel = probe.buttonSelector {
+            cal.loginButton = LoginCalibrationService.ElementMapping(cssSelector: btnSel, fallbackSelectors: probe.buttonFallbacks, nearbyText: probe.buttonText)
+        }
+        cal.pageStructureHash = probe.pageStructureHash
+        return cal
+    }
+
+    private func fillFieldAtCoordinates(_ coords: CGPoint, value: String, fieldName: String) async -> (success: Bool, detail: String) {
+        let safeVal = escapeForJS(value)
+        let cx = Int(coords.x)
+        let cy = Int(coords.y)
+        let js = "(function(){var el=document.elementFromPoint(\(cx),\(cy));if(!el)return'NO_EL';if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){var inp=el.querySelector('input');if(inp)el=inp;}el.focus();el.value='';var ns=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');if(ns&&ns.set){ns.set.call(el,'" + safeVal + "');}else{el.value='" + safeVal + "';}el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return el.value.length>0?'COORD_OK':'COORD_MISMATCH';})()"
+        let result = await executeJS(js)
+        if result == "COORD_OK" || result == "COORD_MISMATCH" {
+            return (true, "\(fieldName) filled via calibrated coordinates")
+        }
+        return (false, "\(fieldName) coordinate fill failed: \(result ?? "nil")")
+    }
+
+        func fillUsername(_ username: String) async -> (success: Bool, detail: String) {
         let strategies = """
         [
             {"type":"id","value":"email"},{"type":"id","value":"username"},{"type":"id","value":"login-email"},
@@ -1252,6 +1361,16 @@ class LoginSiteWebSession: NSObject {
             },
             sessionId: sessionId
         )
+    }
+
+    func getWebView() -> WKWebView? {
+        let mirror = Mirror(reflecting: self)
+        for child in mirror.children {
+            if let label = child.label, label == "webView", let wv = child.value as? WKWebView {
+                return wv
+            }
+        }
+        return nil
     }
 
     private func classifyFillResult(_ result: String?, fieldName: String) -> (success: Bool, detail: String) {

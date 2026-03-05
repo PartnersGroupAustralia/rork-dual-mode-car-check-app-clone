@@ -183,12 +183,35 @@ class LoginAutomationEngine {
 
         let humanEngine = HumanInteractionEngine.shared
         let patternLearning = LoginPatternLearning.shared
+        let calibrationService = LoginCalibrationService.shared
         let targetURLString = session.targetURL.absoluteString
+
+        var calibration = calibrationService.calibrationFor(url: targetURLString)
+        if calibration == nil || !calibration!.isCalibrated {
+            logger.log("No calibration — running auto-calibrate probe", category: .automation, level: .info, sessionId: sessionId)
+            if let autoCal = await session.autoCalibrate() {
+                calibrationService.saveCalibration(autoCal, forURL: targetURLString)
+                calibration = autoCal
+                attempt.logs.append(PPSRLogEntry(message: "Auto-calibrated: email=\(autoCal.emailField?.cssSelector ?? "nil") pass=\(autoCal.passwordField?.cssSelector ?? "nil") btn=\(autoCal.loginButton?.cssSelector ?? "nil")", level: .info))
+                logger.log("Auto-calibration SUCCESS", category: .automation, level: .success, sessionId: sessionId)
+            } else {
+                attempt.logs.append(PPSRLogEntry(message: "Auto-calibration failed — using generic selectors", level: .warning))
+            }
+        } else {
+            attempt.logs.append(PPSRLogEntry(message: "Using saved calibration (confidence: \(String(format: "%.0f%%", calibration!.confidence * 100)))", level: .info))
+        }
 
         let maxSubmitCycles = 4
         var finalOutcome: LoginOutcome = .noAcc
         var lastEvaluation: EvaluationResult?
         var usedPatterns: [LoginFormPattern] = []
+
+        let priorityPatterns: [LoginFormPattern]
+        if calibration?.isCalibrated == true {
+            priorityPatterns = [.calibratedTyping, .calibratedDirect, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
+        } else {
+            priorityPatterns = [.tabNavigation, .reactNativeSetter, .formSubmitDirect, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst, .calibratedDirect, .coordinateClick, .calibratedTyping]
+        }
 
         for cycle in 1...maxSubmitCycles {
             logger.log("Phase: HUMAN PATTERN CYCLE \(cycle)/\(maxSubmitCycles)", category: .automation, level: .info, sessionId: sessionId)
@@ -196,10 +219,15 @@ class LoginAutomationEngine {
 
             let selectedPattern: LoginFormPattern
             if cycle == 1 {
-                selectedPattern = humanEngine.selectBestPattern(for: targetURLString)
+                let learned = humanEngine.selectBestPattern(for: targetURLString)
+                if calibration?.isCalibrated == true && !usedPatterns.contains(.calibratedTyping) {
+                    selectedPattern = .calibratedTyping
+                } else {
+                    selectedPattern = learned
+                }
             } else {
-                let remaining = LoginFormPattern.allCases.filter { !usedPatterns.contains($0) }
-                selectedPattern = remaining.randomElement() ?? LoginFormPattern.allCases.randomElement()!
+                let remaining = priorityPatterns.filter { !usedPatterns.contains($0) }
+                selectedPattern = remaining.first ?? LoginFormPattern.allCases.filter { !usedPatterns.contains($0) }.randomElement() ?? LoginFormPattern.allCases.randomElement()!
             }
             usedPatterns.append(selectedPattern)
 
@@ -242,27 +270,38 @@ class LoginAutomationEngine {
             logger.log("Pattern '\(selectedPattern.rawValue)' result: \(patternResult.summary)", category: .automation, level: patternResult.overallSuccess ? .success : .warning, sessionId: sessionId, durationMs: patternMs)
 
             if !patternResult.usernameFilled || !patternResult.passwordFilled {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): field fill failed — falling back to legacy fill", level: .warning))
-                let _ = await session.fillUsername(attempt.credential.username)
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): field fill failed — falling back to calibrated+legacy fill", level: .warning))
+                let calUserResult = await session.fillUsernameCalibrated(attempt.credential.username, calibration: calibration)
+                attempt.logs.append(PPSRLogEntry(message: "Calibrated email fill: \(calUserResult.detail)", level: calUserResult.success ? .info : .warning))
                 try? await Task.sleep(for: .milliseconds(300))
-                let _ = await session.fillPassword(attempt.credential.password)
+                let calPassResult = await session.fillPasswordCalibrated(attempt.credential.password, calibration: calibration)
+                attempt.logs.append(PPSRLogEntry(message: "Calibrated password fill: \(calPassResult.detail)", level: calPassResult.success ? .info : .warning))
                 try? await Task.sleep(for: .milliseconds(400))
             }
 
             advanceTo(.submitting, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — evaluating submit...")
 
             if !patternResult.submitTriggered {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying legacy click strategies", level: .warning))
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying calibrated+legacy click strategies", level: .warning))
                 var legacySubmitOK = false
-                for submitAttempt in 1...3 {
-                    let clickResult = await session.clickLoginButton()
-                    if clickResult.success {
-                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) legacy click attempt \(submitAttempt): \(clickResult.detail)", level: .info))
-                        legacySubmitOK = true
-                        break
-                    }
-                    if submitAttempt < 3 {
-                        try? await Task.sleep(for: .seconds(Double(submitAttempt)))
+
+                let calClickResult = await session.clickLoginButtonCalibrated(calibration: calibration)
+                if calClickResult.success {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) calibrated click: \(calClickResult.detail)", level: .info))
+                    legacySubmitOK = true
+                }
+
+                if !legacySubmitOK {
+                    for submitAttempt in 1...3 {
+                        let clickResult = await session.clickLoginButton()
+                        if clickResult.success {
+                            attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) legacy click attempt \(submitAttempt): \(clickResult.detail)", level: .info))
+                            legacySubmitOK = true
+                            break
+                        }
+                        if submitAttempt < 3 {
+                            try? await Task.sleep(for: .seconds(Double(submitAttempt)))
+                        }
                     }
                 }
                 if !legacySubmitOK {

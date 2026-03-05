@@ -18,8 +18,13 @@ struct LoginNetworkSettingsView: View {
     @State private var nordAccessKeyInput: String = ""
     @State private var isTestingVPNConfigs: Bool = false
     @State private var isValidatingURLs: Bool = false
+    @State private var showCalibrationSheet: Bool = false
+    @State private var calibrationURL: String = ""
+    @State private var isAutoCalibrating: Bool = false
+    @State private var autoCalibrationLog: [String] = []
 
     private let nordService = NordVPNService.shared
+    private let calibrationService = LoginCalibrationService.shared
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -28,6 +33,7 @@ struct LoginNetworkSettingsView: View {
     var body: some View {
         List {
             urlRotationSection
+            urlCalibrationSection
             urlValidationSection
             joeConnectionModeSection
             ignitionConnectionModeSection
@@ -37,6 +43,13 @@ struct LoginNetworkSettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Networks")
         .sheet(isPresented: $showURLManager) { urlManagerSheet }
+        .sheet(isPresented: $showCalibrationSheet) {
+            if !calibrationURL.isEmpty {
+                LoginCalibrationView(urlString: calibrationURL) { cal in
+                    vm.log("Calibration saved for \(cal.urlPattern)", level: .success)
+                }
+            }
+        }
         .sheet(isPresented: $showDNSManager) { loginDNSManagerSheet }
         .sheet(isPresented: $showJoeProxyImport) { targetProxyImportSheet(target: .joe) }
         .sheet(isPresented: $showIgnitionTargetProxyImport) { targetProxyImportSheet(target: .ignition) }
@@ -143,6 +156,113 @@ struct LoginNetworkSettingsView: View {
             Text("URL Rotation")
         } footer: {
             Text("Each test uses the next enabled URL in rotation. Failed URLs are auto-disabled after 2 consecutive failures.")
+        }
+    }
+
+    // MARK: - URL Calibration
+
+    private var urlCalibrationSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "target").foregroundStyle(accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("URL Calibration").font(.body)
+                    Text("\(calibrationService.calibratedURLCount) of \(vm.urlRotation.activeURLs.count) URLs calibrated").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if calibrationService.calibratedURLCount > 0 {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+
+            Button {
+                guard !isAutoCalibrating else { return }
+                isAutoCalibrating = true
+                autoCalibrationLog = []
+                vm.log("Starting bulk auto-calibration...")
+                Task {
+                    let urls = vm.urlRotation.enabledURLs
+                    for (index, rotUrl) in urls.enumerated() {
+                        guard let url = rotUrl.url else { continue }
+                        let msg = "[\(index + 1)/\(urls.count)] Probing \(rotUrl.host)..."
+                        autoCalibrationLog.append(msg)
+                        vm.log(msg)
+
+                        let session = LoginSiteWebSession(targetURL: url)
+                        session.stealthEnabled = vm.stealthEnabled
+                        session.setUp(wipeAll: true)
+                        let loaded = await session.loadPage(timeout: 20)
+                        if loaded {
+                            if let cal = await session.autoCalibrate() {
+                                calibrationService.saveCalibration(cal, forURL: url.absoluteString)
+                                let detail = "\(rotUrl.host): email=\(cal.emailField?.cssSelector ?? "?") btn=\(cal.loginButton?.cssSelector ?? "?")"
+                                autoCalibrationLog.append("  \u{2705} \(detail)")
+                                vm.log("Calibrated \(rotUrl.host)", level: .success)
+                            } else {
+                                autoCalibrationLog.append("  \u{274C} \(rotUrl.host): probe failed")
+                                vm.log("Calibration failed for \(rotUrl.host)", level: .warning)
+                            }
+                        } else {
+                            autoCalibrationLog.append("  \u{274C} \(rotUrl.host): page load failed")
+                            vm.log("Page load failed for \(rotUrl.host)", level: .warning)
+                        }
+                        session.tearDown(wipeAll: true)
+                    }
+                    isAutoCalibrating = false
+                    vm.log("Bulk calibration complete: \(calibrationService.calibratedURLCount) calibrated", level: .success)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    if isAutoCalibrating {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "wand.and.stars").foregroundStyle(accentColor)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Calibrate All URLs").font(.subheadline.bold())
+                        Text(isAutoCalibrating ? "Probing \(autoCalibrationLog.count) URLs..." : "Probe DOM structure of all enabled URLs")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            .disabled(isAutoCalibrating)
+
+            ForEach(vm.urlRotation.enabledURLs.prefix(5), id: \.id) { rotUrl in
+                Button {
+                    calibrationURL = rotUrl.urlString
+                    showCalibrationSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        let hasCal = calibrationService.calibrationFor(url: rotUrl.urlString)?.isCalibrated == true
+                        Image(systemName: hasCal ? "checkmark.circle.fill" : "circle.dashed")
+                            .foregroundStyle(hasCal ? .green : .secondary)
+                            .font(.caption)
+                        Text(rotUrl.host)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                        Spacer()
+                        Text("Calibrate")
+                            .font(.caption2)
+                            .foregroundStyle(accentColor)
+                    }
+                }
+            }
+
+            if calibrationService.totalCalibrations > 0 {
+                Button(role: .destructive) {
+                    calibrationService.deleteAll()
+                    vm.log("All calibrations deleted", level: .warning)
+                } label: {
+                    Label("Clear All Calibrations", systemImage: "trash")
+                        .font(.subheadline)
+                }
+            }
+        } header: {
+            Text("URL Calibration")
+        } footer: {
+            Text("Calibration maps exact CSS selectors for email, password, and login button on each URL. Auto-calibrate probes all URLs, or tap a URL to manually calibrate by tapping elements.")
         }
     }
 
