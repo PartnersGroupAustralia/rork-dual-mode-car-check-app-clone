@@ -1,11 +1,13 @@
 import Foundation
 import WebKit
+import UIKit
 
 @MainActor
 class FlowPlaybackEngine {
     static let shared = FlowPlaybackEngine()
 
     private let logger = DebugLogger.shared
+    private let visionML = VisionMLService.shared
     private(set) var isPlaying: Bool = false
     private(set) var currentActionIndex: Int = 0
     private(set) var totalActions: Int = 0
@@ -140,8 +142,119 @@ class FlowPlaybackEngine {
             }
         }
 
-        logger.logHealing(category: .flowRecorder, originalError: "Action #\(index) (\(action.type.rawValue)) failed", healingAction: "All healing strategies exhausted", succeeded: false, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
+        let visionHealed = await healWithVision(action, index: index, in: webView, textboxValues: textboxValues, sessionId: sessionId)
+        if visionHealed {
+            healedActionCount += 1
+            logger.logHealing(category: .flowRecorder, originalError: "Action #\(index) (\(action.type.rawValue)) failed", healingAction: "Vision ML OCR fallback", succeeded: true, attemptNumber: 2, durationMs: elapsed, sessionId: sessionId)
+            return true
+        }
+
+        logger.logHealing(category: .flowRecorder, originalError: "Action #\(index) (\(action.type.rawValue)) failed", healingAction: "All healing strategies exhausted (including Vision ML)", succeeded: false, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
         return false
+    }
+
+    private func healWithVision(_ action: RecordedAction, index: Int, in webView: WKWebView, textboxValues: [String: String], sessionId: String) async -> Bool {
+        guard let screenshot = await captureWebViewScreenshot(webView) else { return false }
+
+        let viewportSize = webView.frame.size.width > 0 ? webView.frame.size : CGSize(width: 390, height: 844)
+
+        if action.type == .click || action.type == .mouseDown || action.type == .mouseUp {
+            if let label = action.textboxLabel ?? action.targetTagName {
+                let hit = await visionML.findTextOnScreen(label, in: screenshot, viewportSize: viewportSize)
+                if let hit {
+                    logger.log("FlowPlayback: Vision healed click — found '\(label)' at (\(Int(hit.pixelCoordinate.x)),\(Int(hit.pixelCoordinate.y)))", category: .healing, level: .debug, sessionId: sessionId)
+                    let js = buildVisionClickJS(x: hit.pixelCoordinate.x, y: hit.pixelCoordinate.y)
+                    let result = await safeEvalJS(js, in: webView)
+                    return result?.hasPrefix("CLICKED") == true || result == "HEALED"
+                }
+            }
+
+            let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
+            if let btnHit = detection.loginButton {
+                logger.log("FlowPlayback: Vision healed click — found login button '\(btnHit.label)' at (\(Int(btnHit.pixelCoordinate.x)),\(Int(btnHit.pixelCoordinate.y)))", category: .healing, level: .debug, sessionId: sessionId)
+                let js = buildVisionClickJS(x: btnHit.pixelCoordinate.x, y: btnHit.pixelCoordinate.y)
+                let result = await safeEvalJS(js, in: webView)
+                return result?.hasPrefix("CLICKED") == true || result == "HEALED"
+            }
+        }
+
+        if action.type == .input || action.type == .textboxEntry || action.type == .focus {
+            if let label = action.textboxLabel {
+                let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
+                let lowerLabel = label.lowercased()
+
+                var targetCoord: CGPoint?
+                if lowerLabel.contains("email") || lowerLabel.contains("user") {
+                    targetCoord = detection.emailField?.pixelCoordinate
+                } else if lowerLabel.contains("pass") {
+                    targetCoord = detection.passwordField?.pixelCoordinate
+                }
+
+                if let coord = targetCoord {
+                    let clickJS = buildVisionClickJS(x: coord.x, y: coord.y)
+                    _ = await safeEvalJS(clickJS, in: webView)
+                    try? await Task.sleep(for: .milliseconds(200))
+
+                    if action.type == .input || action.type == .textboxEntry {
+                        let value = textboxValues[label] ?? action.textContent ?? ""
+                        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+                        let typeJS = """
+                        (function(){
+                            var el = document.activeElement;
+                            if (!el || el === document.body) return 'NO_ACTIVE';
+                            el.value = '';
+                            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                            if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
+                            el.dispatchEvent(new Event('input', {bubbles:true}));
+                            el.dispatchEvent(new Event('change', {bubbles:true}));
+                            return el.value.length > 0 ? 'TYPED' : 'EMPTY';
+                        })()
+                        """
+                        let result = await safeEvalJS(typeJS, in: webView)
+                        logger.log("FlowPlayback: Vision healed input for '\(label)' — \(result ?? "nil")", category: .healing, level: .debug, sessionId: sessionId)
+                        return result == "TYPED"
+                    }
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func buildVisionClickJS(x: CGFloat, y: CGFloat) -> String {
+        """
+        (function(){
+            var el = document.elementFromPoint(\(Int(x)), \(Int(y)));
+            if (!el) return 'NO_ELEMENT';
+            try {
+                el.focus();
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:\(Int(x)),clientY:\(Int(y)),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:\(Int(x)),clientY:\(Int(y))}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:\(Int(x)),clientY:\(Int(y)),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:\(Int(x)),clientY:\(Int(y))}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(Int(x)),clientY:\(Int(y))}));
+                if (typeof el.click === 'function') el.click();
+                if (el.tagName === 'A' && el.href) { window.location.href = el.href; }
+                if (el.tagName === 'BUTTON' || el.type === 'submit') {
+                    var form = el.closest('form');
+                    if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
+                }
+                return 'CLICKED:' + el.tagName;
+            } catch(e) { return 'ERROR:' + e.message; }
+        })()
+        """
+    }
+
+    private func captureWebViewScreenshot(_ webView: WKWebView) async -> UIImage? {
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = NSNumber(value: Int(webView.frame.width))
+        do {
+            return try await webView.takeSnapshot(configuration: config)
+        } catch {
+            logger.logError("FlowPlayback: screenshot capture failed", error: error, category: .webView)
+            return nil
+        }
     }
 
     private func healClickAction(pos: RecordedMousePosition, in webView: WKWebView) async -> Bool {

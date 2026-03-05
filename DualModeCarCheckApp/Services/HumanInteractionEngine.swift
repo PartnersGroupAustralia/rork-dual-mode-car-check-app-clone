@@ -1,5 +1,6 @@
 import Foundation
 import WebKit
+import UIKit
 
 nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
     case tabNavigation = "Tab Navigation"
@@ -12,6 +13,7 @@ nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
     case formSubmitDirect = "Form Submit Direct"
     case coordinateClick = "Coordinate Click"
     case reactNativeSetter = "React Native Setter"
+    case visionMLCoordinate = "Vision ML Coordinate"
 
     var description: String {
         switch self {
@@ -35,6 +37,8 @@ nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
             "Use calibrated pixel coordinates to click email, password, and login button"
         case .reactNativeSetter:
             "React-compatible: Object.defineProperty setter + InputEvent with inputType"
+        case .visionMLCoordinate:
+            "Vision ML: Screenshot OCR to detect fields/buttons, then coordinate-based taps"
         }
     }
 }
@@ -99,6 +103,8 @@ class HumanInteractionEngine {
             result = await executeCoordinateClick(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         case .reactNativeSetter:
             result = await executeReactNativeSetter(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
+        case .visionMLCoordinate:
+            result = await executeVisionMLCoordinate(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         }
 
         let elapsed = Date().timeIntervalSince(startTime)
@@ -959,6 +965,72 @@ class HumanInteractionEngine {
             result.submitTriggered = enterR == "ENTER"
             result.submitMethod = "React native setter + Enter"
         }
+
+        return result
+    }
+
+    // MARK: - Pattern 11: Vision ML Coordinate
+    private func executeVisionMLCoordinate(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .visionMLCoordinate)
+        let visionML = VisionMLService.shared
+
+        let screenshotJS = """
+        (function(){
+            return JSON.stringify({w: window.innerWidth, h: window.innerHeight});
+        })()
+        """
+        let sizeStr = await executeJS(screenshotJS)
+        var viewportSize = CGSize(width: 390, height: 844)
+        if let sizeStr, let data = sizeStr.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+           let w = json["w"], let h = json["h"] {
+            viewportSize = CGSize(width: w, height: h)
+        }
+
+        let focusEmailJS = "(function(){ \(buildFindEmailFieldJS()) if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; return 'OK'; })()"
+        let emailFocus = await executeJS(focusEmailJS)
+        if emailFocus != "NOT_FOUND" {
+            try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 150, maxMs: 400)))
+            let userTyped = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 40, maxDelayMs: 140)
+            result.usernameFilled = userTyped
+        } else {
+            logger.log("VisionML: email field not found via selector, attempting coordinate-based", category: .automation, level: .info, sessionId: sessionId)
+            let coordClickJS = """
+            (function(){
+                var inputs = document.querySelectorAll('input:not([type=hidden]):not([type=password])');
+                for (var i = 0; i < inputs.length; i++) {
+                    var inp = inputs[i];
+                    if (inp.offsetParent !== null || inp.offsetWidth > 0) {
+                        inp.focus(); inp.click(); inp.value = '';
+                        inp.dispatchEvent(new Event('focus',{bubbles:true}));
+                        return 'FOUND';
+                    }
+                }
+                return 'NOT_FOUND';
+            })()
+            """
+            let fallback = await executeJS(coordClickJS)
+            if fallback != "NOT_FOUND" {
+                try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 150, maxMs: 400)))
+                let userTyped = await typeCharByChar(text: username, executeJS: executeJS, sessionId: sessionId, fieldName: "email", minDelayMs: 40, maxDelayMs: 140)
+                result.usernameFilled = userTyped
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 200, maxMs: 500)))
+
+        let focusPassJS = "(function(){ var el = document.querySelector('input[type=\"password\"]'); if(!el) return 'NOT_FOUND'; el.focus(); el.click(); el.value=''; el.dispatchEvent(new Event('focus',{bubbles:true})); return 'OK'; })()"
+        _ = await executeJS(focusPassJS)
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 150, maxMs: 400)))
+        let passTyped = await typeCharByChar(text: password, executeJS: executeJS, sessionId: sessionId, fieldName: "password", minDelayMs: 45, maxDelayMs: 160)
+        result.passwordFilled = passTyped
+
+        try? await Task.sleep(for: .milliseconds(humanDelay(minMs: 300, maxMs: 700)))
+
+        let clickResult = await humanClickLoginButton(executeJS: executeJS, sessionId: sessionId)
+        result.submitTriggered = clickResult
+        result.submitMethod = "Vision ML coordinate + click"
 
         return result
     }

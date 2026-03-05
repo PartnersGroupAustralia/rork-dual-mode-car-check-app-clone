@@ -20,6 +20,7 @@ class LoginAutomationEngine {
     var debugMode: Bool = false
     var stealthEnabled: Bool = false
     private let logger = DebugLogger.shared
+    private let visionML = VisionMLService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
@@ -195,7 +196,15 @@ class LoginAutomationEngine {
                 attempt.logs.append(PPSRLogEntry(message: "Auto-calibrated: email=\(autoCal.emailField?.cssSelector ?? "nil") pass=\(autoCal.passwordField?.cssSelector ?? "nil") btn=\(autoCal.loginButton?.cssSelector ?? "nil")", level: .info))
                 logger.log("Auto-calibration SUCCESS", category: .automation, level: .success, sessionId: sessionId)
             } else {
-                attempt.logs.append(PPSRLogEntry(message: "Auto-calibration failed — using generic selectors", level: .warning))
+                attempt.logs.append(PPSRLogEntry(message: "Auto-calibration failed — trying Vision ML calibration", level: .warning))
+                let visionCal = await visionCalibrateSession(session: session, forURL: targetURLString, sessionId: sessionId)
+                if let visionCal {
+                    calibrationService.saveCalibration(visionCal, forURL: targetURLString)
+                    calibration = visionCal
+                    attempt.logs.append(PPSRLogEntry(message: "Vision ML calibrated: confidence=\(String(format: "%.0f%%", visionCal.confidence * 100))", level: .success))
+                } else {
+                    attempt.logs.append(PPSRLogEntry(message: "Vision ML calibration also failed — using generic selectors", level: .warning))
+                }
             }
         } else {
             attempt.logs.append(PPSRLogEntry(message: "Using saved calibration (confidence: \(String(format: "%.0f%%", calibration!.confidence * 100)))", level: .info))
@@ -208,9 +217,9 @@ class LoginAutomationEngine {
 
         let priorityPatterns: [LoginFormPattern]
         if calibration?.isCalibrated == true {
-            priorityPatterns = [.calibratedTyping, .calibratedDirect, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
+            priorityPatterns = [.calibratedTyping, .calibratedDirect, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .visionMLCoordinate, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
         } else {
-            priorityPatterns = [.tabNavigation, .reactNativeSetter, .formSubmitDirect, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst, .calibratedDirect, .coordinateClick, .calibratedTyping]
+            priorityPatterns = [.tabNavigation, .reactNativeSetter, .visionMLCoordinate, .formSubmitDirect, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst, .calibratedDirect, .coordinateClick, .calibratedTyping]
         }
 
         for cycle in 1...maxSubmitCycles {
@@ -308,6 +317,13 @@ class LoginAutomationEngine {
                     let ocrResult = await session.ocrClickLoginButton()
                     if ocrResult.success {
                         attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) OCR click: \(ocrResult.detail)", level: .info))
+                        legacySubmitOK = true
+                    }
+                }
+                if !legacySubmitOK {
+                    let visionResult = await visionClickLoginButton(session: session, sessionId: sessionId)
+                    if visionResult {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) Vision ML click: found and clicked login button via screenshot OCR", level: .success))
                         legacySubmitOK = true
                     }
                 }
@@ -764,6 +780,91 @@ class LoginAutomationEngine {
         )
         attempt.screenshotIds.append(screenshot.id)
         onScreenshot?(screenshot)
+    }
+
+    private func visionCalibrateSession(session: LoginSiteWebSession, forURL url: String, sessionId: String) async -> LoginCalibrationService.URLCalibration? {
+        guard let screenshot = await session.captureScreenshot() else {
+            logger.log("Vision calibration: no screenshot available", category: .automation, level: .error, sessionId: sessionId)
+            return nil
+        }
+
+        let viewportSize = session.getViewportSize()
+        let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
+
+        guard detection.confidence > 0.3 else {
+            logger.log("Vision calibration: confidence too low (\(String(format: "%.0f%%", detection.confidence * 100)))", category: .automation, level: .warning, sessionId: sessionId)
+            return nil
+        }
+
+        let cal = visionML.buildVisionCalibration(from: detection, forURL: url)
+        logger.log("Vision calibration: built calibration for \(url) — email:\(cal.emailField != nil) pass:\(cal.passwordField != nil) btn:\(cal.loginButton != nil)", category: .automation, level: .success, sessionId: sessionId)
+        return cal
+    }
+
+    private func visionClickLoginButton(session: LoginSiteWebSession, sessionId: String) async -> Bool {
+        guard let screenshot = await session.captureScreenshot() else { return false }
+
+        let viewportSize = session.getViewportSize()
+
+        for searchTerm in ["Log In", "Login", "Sign In", "Submit", "Enter"] {
+            let hit = await visionML.findTextOnScreen(searchTerm, in: screenshot, viewportSize: viewportSize)
+            if let hit {
+                let js = """
+                (function(){
+                    var el = document.elementFromPoint(\(Int(hit.pixelCoordinate.x)), \(Int(hit.pixelCoordinate.y)));
+                    if (!el) return 'NO_ELEMENT';
+                    try {
+                        el.focus();
+                        el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:\(Int(hit.pixelCoordinate.x)),clientY:\(Int(hit.pixelCoordinate.y)),pointerId:1,pointerType:'touch'}));
+                        el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:\(Int(hit.pixelCoordinate.x)),clientY:\(Int(hit.pixelCoordinate.y))}));
+                        el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:\(Int(hit.pixelCoordinate.x)),clientY:\(Int(hit.pixelCoordinate.y)),pointerId:1,pointerType:'touch'}));
+                        el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:\(Int(hit.pixelCoordinate.x)),clientY:\(Int(hit.pixelCoordinate.y))}));
+                        el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(Int(hit.pixelCoordinate.x)),clientY:\(Int(hit.pixelCoordinate.y))}));
+                        if (typeof el.click === 'function') el.click();
+                        if (el.tagName === 'BUTTON' || el.type === 'submit') {
+                            var form = el.closest('form');
+                            if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
+                        }
+                        return 'VISION_CLICKED:' + el.tagName;
+                    } catch(e) { return 'ERROR:' + e.message; }
+                })()
+                """
+                let result = await session.executeJS(js)
+                if let result, result.hasPrefix("VISION_CLICKED") {
+                    logger.log("Vision click login button: found '\(searchTerm)' at (\(Int(hit.pixelCoordinate.x)),\(Int(hit.pixelCoordinate.y))) — \(result)", category: .automation, level: .success, sessionId: sessionId)
+                    return true
+                }
+            }
+        }
+
+        let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
+        if let btnHit = detection.loginButton {
+            let js = """
+            (function(){
+                var el = document.elementFromPoint(\(Int(btnHit.pixelCoordinate.x)), \(Int(btnHit.pixelCoordinate.y)));
+                if (!el) return 'NO_ELEMENT';
+                el.focus();
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(Int(btnHit.pixelCoordinate.x)),clientY:\(Int(btnHit.pixelCoordinate.y))}));
+                if (typeof el.click === 'function') el.click();
+                return 'VISION_CLICKED:' + el.tagName;
+            })()
+            """
+            let result = await session.executeJS(js)
+            if let result, result.hasPrefix("VISION_CLICKED") {
+                logger.log("Vision click login button (detection): '\(btnHit.label)' — \(result)", category: .automation, level: .success, sessionId: sessionId)
+                return true
+            }
+        }
+
+        logger.log("Vision click login button: no button found via OCR", category: .automation, level: .warning, sessionId: sessionId)
+        return false
+    }
+
+    private func visionVerifyPostLogin(session: LoginSiteWebSession, sessionId: String) async -> (welcomeFound: Bool, errorFound: Bool, context: String?) {
+        guard let screenshot = await session.captureScreenshot() else {
+            return (false, false, nil)
+        }
+        return await visionML.detectSuccessIndicators(in: screenshot)
     }
 
     private func captureDebugScreenshot(session: LoginSiteWebSession, attempt: LoginAttempt, step: String, note: String, autoResult: PPSRDebugScreenshot.AutoDetectedResult = .unknown) async {

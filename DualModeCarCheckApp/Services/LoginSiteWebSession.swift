@@ -1388,7 +1388,7 @@ class LoginSiteWebSession: NSObject {
         }
     }
 
-    private func executeJS(_ js: String) async -> String? {
+    func executeJS(_ js: String) async -> String? {
         guard let webView else { return nil }
         do {
             let result = try await webView.evaluateJavaScript(js)
@@ -1398,6 +1398,10 @@ class LoginSiteWebSession: NSObject {
         } catch {
             return nil
         }
+    }
+
+    func getViewportSize() -> CGSize {
+        webView?.frame.size ?? CGSize(width: 390, height: 844)
     }
 }
 
