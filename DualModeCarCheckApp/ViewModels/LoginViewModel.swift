@@ -33,6 +33,7 @@ class LoginViewModel {
     var dualSiteMode: Bool = false
     var siteMode: SiteMode = .joe
     var savedCropRect: CGRect? = nil
+    var automationSettings: AutomationSettings = AutomationSettings()
 
     nonisolated enum SiteMode: String, CaseIterable, Sendable {
         case joe = "Joe"
@@ -165,6 +166,7 @@ class LoginViewModel {
 
         notifications.requestPermission()
         loadPersistedData()
+        loadAutomationSettings()
     }
 
     private func loadPersistedData() {
@@ -215,6 +217,36 @@ class LoginViewModel {
                 stealthEnabled: stealthEnabled,
                 testTimeout: testTimeout
             )
+        }
+    }
+
+    private let automationSettingsKey = "automation_settings_v1"
+
+    func persistAutomationSettings() {
+        if let data = try? JSONEncoder().encode(automationSettings) {
+            UserDefaults.standard.set(data, forKey: automationSettingsKey)
+        }
+        syncAutomationSettingsToEngine()
+    }
+
+    private func loadAutomationSettings() {
+        if let data = UserDefaults.standard.data(forKey: automationSettingsKey),
+           let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
+            automationSettings = loaded
+        }
+        syncAutomationSettingsToEngine()
+    }
+
+    private func syncAutomationSettingsToEngine() {
+        maxConcurrency = automationSettings.maxConcurrency
+        engine.automationSettings = automationSettings
+        secondaryEngine.automationSettings = automationSettings
+    }
+
+    func flowAssignment(for urlString: String) -> URLFlowAssignment? {
+        automationSettings.urlFlowAssignments.first { assignment in
+            urlString.localizedStandardContains(assignment.urlPattern) ||
+            assignment.urlPattern.localizedStandardContains(urlString)
         }
     }
 
@@ -295,10 +327,31 @@ class LoginViewModel {
         let testURL = getNextTestURL()
         log("Testing connection to \(testURL.host ?? "unknown")...")
 
+        let currentTarget: ProxyRotationService.ProxyTarget = isIgnitionMode ? .ignition : .joe
+        let currentMode = proxyService.connectionMode(for: currentTarget)
+        log("Using \(currentTarget.rawValue) network mode: \(currentMode.label)")
+
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 20
         config.waitsForConnectivity = false
+
+        if automationSettings.useAssignedNetworkForTests && currentMode == .proxy {
+            if let proxy = proxyService.nextWorkingProxy(for: currentTarget) {
+                var proxyDict: [String: Any] = [
+                    "SOCKSEnable": true,
+                    "SOCKSProxy": proxy.host,
+                    "SOCKSPort": proxy.port,
+                ]
+                if let user = proxy.username, let pass = proxy.password {
+                    proxyDict["SOCKSUser"] = user
+                    proxyDict["SOCKSPassword"] = pass
+                }
+                config.connectionProxyDictionary = proxyDict
+                log("Connection test via proxy: \(proxy.displayString)")
+            }
+        }
+
         let urlSession = URLSession(configuration: config)
         defer { urlSession.invalidateAndCancel() }
 

@@ -2005,6 +2005,12 @@ struct LoginMoreMenuView: View {
                     } label: {
                         moreRow(icon: "gearshape.fill", title: "Advanced Settings", subtitle: "Automation, stealth, debug & more", color: .secondary)
                     }
+
+                    NavigationLink {
+                        AutomationSettingsView(vm: vm)
+                    } label: {
+                        moreRow(icon: "slider.horizontal.3", title: "Automation Config", subtitle: "Every facet of automation flow control", color: .teal)
+                    }
                 }
 
                 Section("Flow Recorder") {

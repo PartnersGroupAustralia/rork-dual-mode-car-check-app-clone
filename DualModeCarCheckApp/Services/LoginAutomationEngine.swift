@@ -19,6 +19,7 @@ class LoginAutomationEngine {
     let maxConcurrency: Int = 8
     var debugMode: Bool = false
     var stealthEnabled: Bool = false
+    var automationSettings: AutomationSettings = AutomationSettings()
     private let logger = DebugLogger.shared
     private let visionML = VisionMLService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
