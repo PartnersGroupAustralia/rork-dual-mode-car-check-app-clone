@@ -6,6 +6,8 @@ struct SavedFlowsView: View {
     @State private var expandedFlowId: String?
     @State private var exportData: Data?
     @State private var showExportShare: Bool = false
+    @State private var editingFlow: RecordedFlow?
+    @State private var showEditingStudio: Bool = false
 
     var body: some View {
         Group {
@@ -143,6 +145,24 @@ struct SavedFlowsView: View {
                 .buttonStyle(.plain)
 
                 Button {
+                    editingFlow = flow
+                    showEditingStudio = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 10))
+                        Text("Edit")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.purple)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     withAnimation(.spring(duration: 0.3)) {
                         expandedFlowId = expandedFlowId == flow.id ? nil : flow.id
                     }
@@ -177,6 +197,30 @@ struct SavedFlowsView: View {
         .sheet(isPresented: $showExportShare) {
             if let data = exportData {
                 ShareSheet(items: [data])
+            }
+        }
+        .sheet(isPresented: $showEditingStudio) {
+            if let flow = editingFlow {
+                NavigationStack {
+                    FlowEditingStudioView(
+                        flow: flow,
+                        onSave: { updated in
+                            if let idx = vm.savedFlows.firstIndex(where: { $0.id == updated.id }) {
+                                vm.savedFlows[idx] = updated
+                                FlowPersistenceService.shared.saveFlows(vm.savedFlows)
+                            }
+                            showEditingStudio = false
+                        },
+                        onDuplicate: { copy in
+                            vm.savedFlows.insert(copy, at: 0)
+                            FlowPersistenceService.shared.saveFlows(vm.savedFlows)
+                            showEditingStudio = false
+                        }
+                    )
+                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
             }
         }
     }

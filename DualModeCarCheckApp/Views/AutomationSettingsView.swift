@@ -7,6 +7,7 @@ struct AutomationSettingsView: View {
     @State private var showButtonTextEditor: Bool = false
     @State private var showMFAKeywordEditor: Bool = false
     @State private var showCaptchaKeywordEditor: Bool = false
+    @State private var showTemplates: Bool = false
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -14,6 +15,7 @@ struct AutomationSettingsView: View {
 
     var body: some View {
         List {
+            templateQuickSection
             pageLoadingSection
             fieldDetectionSection
             cookieConsentSection
@@ -29,6 +31,7 @@ struct AutomationSettingsView: View {
             retryRequeueSection
             errorClassificationSection
             sessionManagementSection
+            antiBotSection
             stealthDetailSection
             humanSimulationSection
             viewportWindowSection
@@ -41,6 +44,14 @@ struct AutomationSettingsView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Automation Config")
+        .sheet(isPresented: $showTemplates) {
+            NavigationStack {
+                AutomationTemplateView(vm: vm)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
         .sheet(isPresented: $showFlowAssignment) {
             NavigationStack {
                 URLFlowAssignmentView(vm: vm)
@@ -134,6 +145,40 @@ struct AutomationSettingsView: View {
         }
     }
 
+    // MARK: - Template Quick
+
+    private var templateQuickSection: some View {
+        Section {
+            Button {
+                showTemplates = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "rectangle.stack.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.purple)
+                        .frame(width: 36, height: 36)
+                        .background(.purple.opacity(0.12))
+                        .clipShape(.rect(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Automation Templates")
+                            .font(.subheadline.weight(.bold))
+                        Text("\(AutomationTemplate.builtInTemplates.count) built-in + custom presets")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Label("Quick Apply", systemImage: "bolt.fill")
+        } footer: {
+            Text("Apply a pre-configured template for Vision ML, Coordinate, Stealth, Speed, or Resilient automation.")
+        }
+    }
+
     // MARK: - Field Detection
 
     private var fieldDetectionSection: some View {
@@ -153,7 +198,7 @@ struct AutomationSettingsView: View {
             Toggle(isOn: $vm.automationSettings.autoCalibrationEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto-Calibration")
-                    Text("Probe DOM to map CSS selectors automatically").font(.caption2).foregroundStyle(.secondary)
+                    Text("Probe page to map field positions automatically").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .tint(accentColor)
@@ -161,7 +206,7 @@ struct AutomationSettingsView: View {
             Toggle(isOn: $vm.automationSettings.visionMLCalibrationFallback) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Vision ML Fallback")
-                    Text("Use screenshot OCR if DOM calibration fails").font(.caption2).foregroundStyle(.secondary)
+                    Text("Use screenshot OCR if positional calibration fails").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .tint(.purple)
@@ -178,7 +223,7 @@ struct AutomationSettingsView: View {
         } header: {
             Label("Field Detection", systemImage: "textformat.alt")
         } footer: {
-            Text("How login fields are discovered. Higher confidence threshold = stricter calibration acceptance.")
+            Text("How login fields are discovered via coordinates and Vision ML. Higher threshold = stricter acceptance.")
         }
     }
 
@@ -378,16 +423,6 @@ struct AutomationSettingsView: View {
                 }
             }
 
-            if vm.automationSettings.loginButtonDetectionMode == .cssSelector || vm.automationSettings.loginButtonDetectionMode == .hybrid {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Custom CSS Selector").font(.subheadline)
-                    TextField("e.g. #loginBtn, .submit-button", text: $vm.automationSettings.loginButtonCustomSelector)
-                        .font(.system(.caption, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-            }
-
             Button {
                 showButtonTextEditor = true
             } label: {
@@ -416,7 +451,7 @@ struct AutomationSettingsView: View {
         } header: {
             Label("Login Button Detection", systemImage: "hand.tap.fill")
         } footer: {
-            Text("How the login/submit button is found on the page. Hybrid tries CSS selectors first, then text match, then Vision ML.")
+            Text("How the login/submit button is found. Vision ML uses screenshot analysis, Coordinate uses pixel positions, Hybrid chains all methods.")
         }
 
         Section {
@@ -490,18 +525,14 @@ struct AutomationSettingsView: View {
         Section {
             Toggle("Enter Key Fallback", isOn: $vm.automationSettings.loginButtonEnterKeyFallback).tint(.orange)
             Toggle("Form Submit Fallback", isOn: $vm.automationSettings.loginButtonFormSubmitFallback).tint(.orange)
-            Toggle("ARIA Label Match", isOn: $vm.automationSettings.loginButtonAriaLabelMatch).tint(.purple)
-            Toggle("Role Attribute Match", isOn: $vm.automationSettings.loginButtonRoleMatch).tint(.purple)
-            Toggle("Image Button Detection", isOn: $vm.automationSettings.loginButtonImageButtonDetection).tint(.purple)
-            Toggle("Shadow DOM Search", isOn: $vm.automationSettings.loginButtonShadowDOMSearch).tint(.indigo)
-            Toggle("Iframe Search", isOn: $vm.automationSettings.loginButtonIframeSearch).tint(.indigo)
             Toggle("Vision ML Fallback", isOn: $vm.automationSettings.loginButtonVisionMLFallback).tint(.cyan)
-            Toggle("OCR Fallback", isOn: $vm.automationSettings.loginButtonOCRFallback).tint(.cyan)
+            Toggle("OCR Text Fallback", isOn: $vm.automationSettings.loginButtonOCRFallback).tint(.cyan)
             Toggle("Coordinate Fallback", isOn: $vm.automationSettings.loginButtonCoordinateFallback).tint(.cyan)
+            Toggle("Image Button Detection", isOn: $vm.automationSettings.loginButtonImageButtonDetection).tint(.purple)
         } header: {
-            Label("Button Fallback Chain", systemImage: "arrow.triangle.branch")
+            Label("Anti-Bot Fallback Chain", systemImage: "arrow.triangle.branch")
         } footer: {
-            Text("Fallback strategies when the primary button detection fails. Searched in order: ARIA → Role → Image → Shadow DOM → Iframe → Vision ML → OCR → Coordinates.")
+            Text("Non-selector fallback strategies: Vision ML → OCR Text → Coordinate Tap → Image Detection. All methods avoid DOM queries detectable by anti-bot systems.")
         }
         } // Group
     }
@@ -515,7 +546,7 @@ struct AutomationSettingsView: View {
             Toggle(isOn: $vm.automationSettings.preferCalibratedPatternsFirst) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Prefer Calibrated Patterns")
-                    Text("Try calibrated selectors before generic patterns").font(.caption2).foregroundStyle(.secondary)
+                    Text("Try calibrated coordinates before generic patterns").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .tint(accentColor)
@@ -884,6 +915,48 @@ struct AutomationSettingsView: View {
             Label("Session Management", systemImage: "server.rack")
         } footer: {
             Text("Controls WebView lifecycle, data isolation between attempts, and resource management. Full isolation is most secure but slower.")
+        }
+    }
+
+    // MARK: - Anti-Bot Detection
+
+    private var antiBotSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.fallbackToVisionMLClick) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Vision ML Element Detection")
+                    Text("Screenshot-based OCR to find fields and buttons by pixel analysis").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.purple)
+
+            Toggle(isOn: $vm.automationSettings.fallbackToCoordinateClick) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Coordinate-Based Interaction")
+                    Text("Tap at recorded pixel positions — invisible to DOM-based bot detection").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.cyan)
+
+            Toggle(isOn: $vm.automationSettings.fallbackToOCRClick) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OCR Text Recognition")
+                    Text("Find buttons by reading visible text from screenshots").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.indigo)
+
+            Toggle(isOn: $vm.automationSettings.fallbackToLegacyFill) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Legacy DOM Fill (Detectable)")
+                    Text("Direct DOM manipulation — detectable by anti-bot systems").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .tint(.red)
+        } header: {
+            Label("Anti-Bot Detection", systemImage: "shield.lefthalf.filled.trianglebadge.exclamationmark")
+        } footer: {
+            Text("Non-selector automation methods that bypass anti-bot detection. Vision ML and coordinate-based methods are invisible to JavaScript monitoring. Disable Legacy DOM Fill for maximum stealth.")
         }
     }
 

@@ -245,7 +245,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     }
 
     nonisolated enum ButtonDetectionMode: String, Codable, CaseIterable, Sendable {
-        case cssSelector = "CSS Selector"
+        case cssSelector = "Legacy DOM"
         case textMatch = "Text Match"
         case visionML = "Vision ML"
         case hybrid = "Hybrid"
@@ -253,9 +253,9 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     }
 
     nonisolated enum ButtonClickMethod: String, Codable, CaseIterable, Sendable {
-        case humanClick = "Human Click"
+        case humanClick = "Human Touch Chain"
         case jsClick = "JS Click"
-        case dispatchEvent = "Dispatch Event"
+        case dispatchEvent = "Pointer+Touch Dispatch"
         case formSubmit = "Form Submit"
         case enterKey = "Enter Key"
     }
