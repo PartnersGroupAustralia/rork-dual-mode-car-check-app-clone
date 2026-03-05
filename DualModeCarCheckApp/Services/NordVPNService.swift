@@ -82,6 +82,7 @@ class NordVPNService {
 
     private let accessKeyPersistKey = "nordvpn_access_key_v1"
     private let privateKeyPersistKey = "nordvpn_private_key_v1"
+    private let logger = DebugLogger.shared
 
     init() {
         accessKey = UserDefaults.standard.string(forKey: accessKeyPersistKey) ?? ""
@@ -130,16 +131,20 @@ class NordVPNService {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 lastError = "API returned HTTP \(http.statusCode)"
+                logger.log("NordVPN: fetchPrivateKey failed — HTTP \(http.statusCode)", category: .vpn, level: .error, metadata: ["statusCode": "\(http.statusCode)"])
                 return
             }
             let creds = try JSONDecoder().decode(NordCredentials.self, from: data)
             if let pk = creds.nordlynx_private_key, !pk.isEmpty {
                 setPrivateKey(pk)
+                logger.log("NordVPN: private key fetched successfully", category: .vpn, level: .success)
             } else {
                 lastError = "No private key in response"
+                logger.log("NordVPN: response missing nordlynx_private_key", category: .vpn, level: .error)
             }
         } catch {
             lastError = "Failed to fetch key: \(error.localizedDescription)"
+            logger.logError("NordVPN: fetchPrivateKey network error", error: error, category: .vpn)
         }
     }
 
@@ -175,13 +180,16 @@ class NordVPNService {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 lastError = "API returned HTTP \(http.statusCode)"
+                logger.log("NordVPN: fetchServers failed — HTTP \(http.statusCode)", category: .vpn, level: .error)
                 return
             }
             let servers = try JSONDecoder().decode([NordVPNServer].self, from: data)
             recommendedServers = servers
             lastFetched = Date()
+            logger.log("NordVPN: fetched \(servers.count) servers (tech: \(technology))", category: .vpn, level: .success)
         } catch {
             lastError = "Failed to fetch servers: \(error.localizedDescription)"
+            logger.logError("NordVPN: fetchServers error", error: error, category: .vpn)
         }
     }
 
@@ -192,7 +200,10 @@ class NordVPNService {
         case .udp: downloadURL = server.udpOVPNDownloadURL
         }
 
-        guard let url = downloadURL else { return nil }
+        guard let url = downloadURL else {
+            logger.log("NordVPN: no download URL for \(server.hostname) (\(proto.rawValue))", category: .vpn, level: .error)
+            return nil
+        }
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
@@ -207,12 +218,23 @@ class NordVPNService {
         do {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                logger.log("NordVPN: OVPN download HTTP \(http.statusCode) for \(server.hostname)", category: .vpn, level: .error)
                 return nil
             }
-            guard let content = String(data: data, encoding: .utf8), !content.isEmpty else { return nil }
+            guard let content = String(data: data, encoding: .utf8), !content.isEmpty else {
+                logger.log("NordVPN: OVPN download empty/non-UTF8 for \(server.hostname)", category: .vpn, level: .error)
+                return nil
+            }
             let fileName = "\(server.hostname).\(proto == .tcp ? "tcp" : "udp").ovpn"
-            return OpenVPNConfig.parse(fileName: fileName, content: content)
+            let parsed = OpenVPNConfig.parse(fileName: fileName, content: content)
+            if parsed != nil {
+                logger.log("NordVPN: downloaded \(fileName) (\(data.count) bytes)", category: .vpn, level: .success)
+            } else {
+                logger.log("NordVPN: OVPN parse failed for \(fileName) (\(data.count) bytes)", category: .vpn, level: .error)
+            }
+            return parsed
         } catch {
+            logger.logError("NordVPN: OVPN download error for \(server.hostname)", error: error, category: .vpn)
             return nil
         }
     }

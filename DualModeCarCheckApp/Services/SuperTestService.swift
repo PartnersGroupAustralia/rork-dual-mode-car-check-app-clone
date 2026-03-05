@@ -820,6 +820,7 @@ class SuperTestService {
 
     private func pingURL(_ urlString: String, name: String, category: SuperTestPhase) async -> SuperTestItemResult {
         guard let url = URL(string: urlString) else {
+            logger.log("SuperTest pingURL: invalid URL '\(urlString)'", category: .superTest, level: .error, sessionId: "supertest")
             return SuperTestItemResult(name: name, category: category, passed: false, detail: "Invalid URL")
         }
 
@@ -840,6 +841,11 @@ class SuperTestService {
             let latency = Int(Date().timeIntervalSince(start) * 1000)
             if let http = response as? HTTPURLResponse {
                 let passed = http.statusCode >= 200 && http.statusCode < 400
+                if !passed {
+                    logger.log("SuperTest pingURL: \(name) HTTP \(http.statusCode)", category: .superTest, level: .warning, sessionId: "supertest", durationMs: latency, metadata: [
+                        "url": urlString, "statusCode": "\(http.statusCode)"
+                    ])
+                }
                 return SuperTestItemResult(
                     name: name,
                     category: category,
@@ -851,7 +857,30 @@ class SuperTestService {
             return SuperTestItemResult(name: name, category: category, passed: true, latencyMs: latency, detail: "Response in \(latency)ms")
         } catch {
             let latency = Int(Date().timeIntervalSince(start) * 1000)
-            return SuperTestItemResult(name: name, category: category, passed: false, latencyMs: latency, detail: error.localizedDescription)
+            let classified = logger.classifyNetworkError(error)
+            logger.logError("SuperTest pingURL: \(name) failed", error: error, category: .superTest, sessionId: "supertest", metadata: [
+                "url": urlString, "isRetryable": "\(classified.isRetryable)", "latency": "\(latency)ms"
+            ])
+            if classified.isRetryable {
+                logger.logHealing(category: .superTest, originalError: classified.userMessage, healingAction: "Retrying \(name) with GET fallback", succeeded: false, sessionId: "supertest")
+                var getRequest = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+                getRequest.httpMethod = "GET"
+                getRequest.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+                do {
+                    let (_, retryResponse) = try await session.data(for: getRequest)
+                    let retryLatency = Int(Date().timeIntervalSince(start) * 1000)
+                    if let http = retryResponse as? HTTPURLResponse {
+                        let passed = http.statusCode >= 200 && http.statusCode < 400
+                        if passed {
+                            logger.logHealing(category: .superTest, originalError: classified.userMessage, healingAction: "GET fallback succeeded for \(name) (HTTP \(http.statusCode))", succeeded: true, durationMs: retryLatency, sessionId: "supertest")
+                        }
+                        return SuperTestItemResult(name: name, category: category, passed: passed, latencyMs: retryLatency, detail: "HTTP \(http.statusCode) in \(retryLatency)ms (GET retry)")
+                    }
+                } catch {
+                    logger.logHealing(category: .superTest, originalError: classified.userMessage, healingAction: "GET retry also failed for \(name)", succeeded: false, sessionId: "supertest")
+                }
+            }
+            return SuperTestItemResult(name: name, category: category, passed: false, latencyMs: latency, detail: classified.userMessage)
         }
     }
 
@@ -873,7 +902,8 @@ class SuperTestService {
         defer { session.invalidateAndCancel() }
 
         let start = Date()
-        let testURLs = ["https://api.ipify.org?format=json", "https://httpbin.org/ip"]
+        let testURLs = ["https://api.ipify.org?format=json", "https://httpbin.org/ip", "https://ifconfig.me/ip"]
+        var lastErr = ""
 
         for urlString in testURLs {
             guard let url = URL(string: urlString) else { continue }
@@ -888,8 +918,12 @@ class SuperTestService {
                     return (true, latency)
                 }
             } catch {
+                lastErr = error.localizedDescription
                 continue
             }
+        }
+        Task { @MainActor in
+            self.logger.log("SuperTest proxy FAIL: \(proxy.displayString) — \(lastErr)", category: .proxy, level: .debug, sessionId: "supertest")
         }
         return (false, 0)
     }
@@ -910,11 +944,13 @@ class SuperTestService {
             let (_, response) = try await session.data(for: request)
             let latency = Int(Date().timeIntervalSince(start) * 1000)
             if let http = response as? HTTPURLResponse {
+                logger.log("SuperTest SSL: \(host) TLS OK (HTTP \(http.statusCode)) in \(latency)ms", category: .network, level: .success, sessionId: "supertest", durationMs: latency)
                 return (true, latency, "TLS OK (HTTP \(http.statusCode)) in \(latency)ms")
             }
             return (true, latency, "TLS handshake OK in \(latency)ms")
         } catch {
             let latency = Int(Date().timeIntervalSince(start) * 1000)
+            logger.logError("SuperTest SSL: \(host) failed", error: error, category: .network, sessionId: "supertest")
             return (false, latency, "SSL failed: \(error.localizedDescription)")
         }
     }

@@ -15,10 +15,12 @@ class LoginWebSession: NSObject {
     private var stealthProfile: PPSRStealthService.SessionProfile?
     private(set) var lastFingerprintScore: FingerprintValidationService.FingerprintScore?
     var onFingerprintLog: ((String, PPSRLogEntry.Level) -> Void)?
+    private let logger = DebugLogger.shared
 
     static let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
 
     func setUp() {
+        logger.log("LoginWebSession: setUp (stealth=\(stealthEnabled))", category: .webView, level: .debug)
         if webView != nil {
             tearDown()
         }
@@ -112,8 +114,10 @@ class LoginWebSession: NSObject {
     func loadPage(timeout: TimeInterval = 30) async -> Bool {
         guard let webView else {
             lastNavigationError = "WebView not initialized"
+            logger.log("LoginWebSession: loadPage failed — webView nil", category: .webView, level: .error)
             return false
         }
+        logger.startTimer(key: "loginWebSession_load")
         isPageLoaded = false
         lastNavigationError = nil
         lastHTTPStatusCode = nil
@@ -142,11 +146,18 @@ class LoginWebSession: NSObject {
         loadTimeoutTask?.cancel()
         loadTimeoutTask = nil
 
+        let loadMs = logger.stopTimer(key: "loginWebSession_load")
         if loaded {
+            logger.log("LoginWebSession: page loaded in \(loadMs ?? 0)ms", category: .webView, level: .success, durationMs: loadMs)
             await injectFingerprint()
             try? await Task.sleep(for: .milliseconds(1500))
             await waitForDOMReady(timeout: 10)
             let _ = await validateFingerprint()
+        } else {
+            logger.log("LoginWebSession: page load FAILED — \(lastNavigationError ?? "unknown")", category: .webView, level: .error, durationMs: loadMs, metadata: [
+                "error": lastNavigationError ?? "timeout",
+                "httpStatus": lastHTTPStatusCode.map { "\($0)" } ?? "N/A"
+            ])
         }
 
         return loaded
@@ -549,7 +560,10 @@ class LoginWebSession: NSObject {
     }
 
     private func executeJS(_ js: String) async -> String? {
-        guard let webView else { return nil }
+        guard let webView else {
+            logger.log("LoginWebSession: executeJS — webView nil", category: .webView, level: .warning)
+            return nil
+        }
         do {
             let result = try await webView.evaluateJavaScript(js)
             if let str = result as? String {
@@ -560,6 +574,9 @@ class LoginWebSession: NSObject {
             }
             return nil
         } catch {
+            logger.logError("LoginWebSession: JS eval failed", error: error, category: .webView, metadata: [
+                "jsPrefix": String(js.prefix(60))
+            ])
             return nil
         }
     }

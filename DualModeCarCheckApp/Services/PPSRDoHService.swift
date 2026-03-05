@@ -37,6 +37,7 @@ class PPSRDoHService {
 
     private var providerIndex: Int = 0
     private let persistKey = "doh_managed_providers_v1"
+    private let logger = DebugLogger.shared
 
     static let defaultProviders: [DoHProvider] = [
         DoHProvider(name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query"),
@@ -76,12 +77,17 @@ class PPSRDoHService {
     }
 
     func resolveWithRotation(hostname: String) async -> DNSAnswer? {
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             let provider = nextProvider()
             if let answer = await resolve(hostname: hostname, using: provider) {
+                if attempt > 0 {
+                    logger.logHealing(category: .dns, originalError: "Previous DoH providers failed", healingAction: "Resolved via \(provider.name) on attempt #\(attempt + 1)", succeeded: true, attemptNumber: attempt + 1)
+                }
                 return answer
             }
+            logger.log("DoH: \(provider.name) failed for \(hostname) (attempt \(attempt + 1)/3)", category: .dns, level: .debug)
         }
+        logger.log("DoH: all 3 rotation attempts failed for \(hostname)", category: .dns, level: .error)
         return nil
     }
 
@@ -110,24 +116,34 @@ class PPSRDoHService {
             let latency = Int(Date().timeIntervalSince(start) * 1000)
 
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                logger.log("DoH: \(provider.name) HTTP \(code) for \(hostname)", category: .dns, level: .debug)
                 return nil
             }
 
-            guard !data.isEmpty else { return nil }
+            guard !data.isEmpty else {
+                logger.log("DoH: \(provider.name) empty response for \(hostname)", category: .dns, level: .debug)
+                return nil
+            }
 
             let decoded = try JSONDecoder().decode(DoHResponse.self, from: data)
 
-            guard decoded.Status == 0 || decoded.Status == nil else { return nil }
+            guard decoded.Status == 0 || decoded.Status == nil else {
+                logger.log("DoH: \(provider.name) DNS status \(decoded.Status ?? -1) for \(hostname)", category: .dns, level: .debug)
+                return nil
+            }
 
             guard let answers = decoded.Answer,
                   let aRecord = answers.first(where: { $0.type == 1 }),
                   let ip = aRecord.data,
                   !ip.isEmpty else {
+                logger.log("DoH: \(provider.name) no A record for \(hostname)", category: .dns, level: .debug)
                 return nil
             }
 
             return DNSAnswer(ip: ip, provider: provider.name, latencyMs: latency)
         } catch {
+            logger.logError("DoH: \(provider.name) error resolving \(hostname)", error: error, category: .dns)
             return nil
         }
     }

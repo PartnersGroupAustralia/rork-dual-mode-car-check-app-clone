@@ -44,6 +44,7 @@ class PPSRConnectionDiagnosticService {
 
     private let targetHost = "transact.ppsr.gov.au"
     private let targetURL = URL(string: "https://transact.ppsr.gov.au/CarCheck/")!
+    private let logger = DebugLogger.shared
 
     var isRunning: Bool = false
     var currentStepName: String = ""
@@ -53,6 +54,7 @@ class PPSRConnectionDiagnosticService {
         isRunning = true
         steps = []
         var allSteps: [DiagnosticStep] = []
+        logger.startSession("ppsr_diag", category: .network, message: "PPSR Diagnostic: starting full diagnostic")
 
         let internetStep = await testInternetConnectivity()
         allSteps.append(internetStep)
@@ -97,11 +99,15 @@ class PPSRConnectionDiagnosticService {
         let recommendation = generateRecommendation(steps: allSteps)
         let report = DiagnosticReport(steps: allSteps, recommendation: recommendation)
         isRunning = false
+        let passedCount = allSteps.filter { $0.status == .passed }.count
+        let failedCount = allSteps.filter { $0.status == .failed }.count
+        logger.endSession("ppsr_diag", category: .network, message: "PPSR Diagnostic: complete — \(passedCount) passed, \(failedCount) failed", level: failedCount == 0 ? .success : (passedCount > 0 ? .warning : .error))
         return report
     }
 
     func quickHealthCheck() async -> (healthy: Bool, detail: String) {
         let start = Date()
+        logger.startTimer(key: "ppsr_health")
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 12
@@ -116,15 +122,20 @@ class PPSRConnectionDiagnosticService {
         do {
             let (_, response) = try await session.data(for: request)
             let latency = Int(Date().timeIntervalSince(start) * 1000)
+            _ = logger.stopTimer(key: "ppsr_health")
             if let http = response as? HTTPURLResponse {
                 if http.statusCode >= 200 && http.statusCode < 400 {
+                    logger.log("PPSR health: OK (\(http.statusCode)) in \(latency)ms", category: .network, level: .success, durationMs: latency)
                     return (true, "OK (\(http.statusCode)) in \(latency)ms")
                 } else {
+                    logger.log("PPSR health: FAIL HTTP \(http.statusCode) in \(latency)ms", category: .network, level: .error, durationMs: latency)
                     return (false, "HTTP \(http.statusCode) in \(latency)ms")
                 }
             }
             return (true, "Response received in \(latency)ms")
         } catch {
+            _ = logger.stopTimer(key: "ppsr_health")
+            logger.logError("PPSR health: network error", error: error, category: .network)
             return (false, error.localizedDescription)
         }
     }

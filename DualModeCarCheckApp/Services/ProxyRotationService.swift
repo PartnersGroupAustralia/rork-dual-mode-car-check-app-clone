@@ -78,6 +78,8 @@ class ProxyRotationService {
     private let ignitionWGPersistKey = "wireguard_configs_ignition_v1"
     private let ppsrWGPersistKey = "wireguard_configs_ppsr_v1"
 
+    private let logger = DebugLogger.shared
+
     init() {
         loadProxies()
         loadIgnitionProxies()
@@ -85,6 +87,7 @@ class ProxyRotationService {
         loadConnectionModes()
         loadVPNConfigs()
         loadWGConfigs()
+        logger.log("ProxyRotation: init — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count)", category: .proxy, level: .info)
     }
 
     func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {
@@ -605,6 +608,7 @@ class ProxyRotationService {
             "https://ifconfig.me/ip"
         ]
 
+        var lastErrorDesc = ""
         for urlString in testURLs {
             guard let url = URL(string: urlString) else { continue }
             do {
@@ -617,8 +621,12 @@ class ProxyRotationService {
                     return true
                 }
             } catch {
+                lastErrorDesc = error.localizedDescription
                 continue
             }
+        }
+        Task { @MainActor in
+            self.logger.log("ProxyTest FAIL: \(proxy.displayString) — \(lastErrorDesc)", category: .proxy, level: .debug)
         }
         return false
     }
@@ -849,7 +857,16 @@ class ProxyRotationService {
         let dnsOk = await resolveHost(host)
         if !dnsOk {
             let dohOk = await resolveHostViaDoH(host)
-            if !dohOk { return (false, 0) }
+            if !dohOk {
+                Task { @MainActor in
+                    self.logger.log("VPN reachability: DNS failed for \(host) (system + DoH)", category: .vpn, level: .warning)
+                    self.logger.logHealing(category: .vpn, originalError: "DNS resolution failed for \(host)", healingAction: "Tried DoH fallback — also failed", succeeded: false)
+                }
+                return (false, 0)
+            }
+            Task { @MainActor in
+                self.logger.logHealing(category: .vpn, originalError: "System DNS failed for \(host)", healingAction: "DoH fallback succeeded", succeeded: true)
+            }
         }
 
         if await testTCPConnection(host: host, port: port, timeoutSeconds: 8) {
@@ -859,14 +876,25 @@ class ProxyRotationService {
         let commonPorts = [443, 80, 1194, 1195, 8080]
         for altPort in commonPorts where altPort != port {
             if await testTCPConnection(host: host, port: altPort, timeoutSeconds: 5) {
+                Task { @MainActor in
+                    self.logger.logHealing(category: .vpn, originalError: "TCP failed on port \(port)", healingAction: "Alt port \(altPort) succeeded for \(host)", succeeded: true)
+                }
                 return (true, Int(Date().timeIntervalSince(start) * 1000))
             }
         }
 
         if await testHTTPSHandshake(host: host) {
+            Task { @MainActor in
+                self.logger.logHealing(category: .vpn, originalError: "TCP failed on all ports for \(host)", healingAction: "HTTPS handshake fallback succeeded", succeeded: true)
+            }
             return (true, Int(Date().timeIntervalSince(start) * 1000))
         }
 
+        Task { @MainActor in
+            self.logger.log("VPN reachability: all strategies failed for \(host):\(port)", category: .vpn, level: .error, metadata: [
+                "host": host, "port": "\(port)", "elapsed": "\(Int(Date().timeIntervalSince(start) * 1000))ms"
+            ])
+        }
         return (false, 0)
     }
 
@@ -905,8 +933,12 @@ class ProxyRotationService {
         case .ignition: key = ignitionVPNPersistKey; configs = ignitionVPNConfigs
         case .ppsr: key = ppsrVPNPersistKey; configs = ppsrVPNConfigs
         }
-        if let data = try? JSONEncoder().encode(configs) {
+        do {
+            let data = try JSONEncoder().encode(configs)
             UserDefaults.standard.set(data, forKey: key)
+            logger.log("ProxyRotation: persisted \(configs.count) VPN configs for \(target.rawValue)", category: .persistence, level: .debug)
+        } catch {
+            logger.logError("ProxyRotation: failed to persist VPN configs for \(target.rawValue)", error: error, category: .persistence)
         }
     }
 
@@ -1210,8 +1242,12 @@ class ProxyRotationService {
         case .ignition: key = ignitionWGPersistKey; configs = ignitionWGConfigs
         case .ppsr: key = ppsrWGPersistKey; configs = ppsrWGConfigs
         }
-        if let data = try? JSONEncoder().encode(configs) {
+        do {
+            let data = try JSONEncoder().encode(configs)
             UserDefaults.standard.set(data, forKey: key)
+            logger.log("ProxyRotation: persisted \(configs.count) WG configs for \(target.rawValue)", category: .persistence, level: .debug)
+        } catch {
+            logger.logError("ProxyRotation: failed to persist WG configs for \(target.rawValue)", error: error, category: .persistence)
         }
     }
 

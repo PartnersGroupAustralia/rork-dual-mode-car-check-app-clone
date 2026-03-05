@@ -7,6 +7,7 @@ class FingerprintValidationService {
 
     private(set) var lastScore: FingerprintScore?
     private(set) var scoreHistory: [FingerprintScore] = []
+    private let logger = DebugLogger.shared
 
     struct FingerprintScore {
         let timestamp: Date
@@ -293,7 +294,9 @@ class FingerprintValidationService {
     """
 
     func validate(in webView: WKWebView, profileSeed: UInt32) async -> FingerprintScore {
+        logger.startTimer(key: "fp_validate_\(profileSeed)")
         let result = await executeJS(validationJS(), in: webView)
+        let elapsed = logger.stopTimer(key: "fp_validate_\(profileSeed)")
 
         guard let data = result?.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -306,6 +309,9 @@ class FingerprintValidationService {
                 signals: ["validation JS failed to execute"], profileSeed: profileSeed, passed: true
             )
             lastScore = fallback
+            logger.log("Fingerprint: validation JS failed to execute (seed: \(profileSeed))", category: .fingerprint, level: .error, durationMs: elapsed, metadata: [
+                "resultPreview": String((result ?? "nil").prefix(100))
+            ])
             return fallback
         }
 
@@ -316,6 +322,8 @@ class FingerprintValidationService {
         lastScore = score
         scoreHistory.insert(score, at: 0)
         if scoreHistory.count > 50 { scoreHistory = Array(scoreHistory.prefix(50)) }
+
+        logger.log("Fingerprint: \(passed ? "PASS" : "FAIL") score=\(totalScore)/\(maxSafe) signals=\(signalArray.count) seed=\(profileSeed)", category: .fingerprint, level: passed ? .success : .warning, durationMs: elapsed)
         return score
     }
 

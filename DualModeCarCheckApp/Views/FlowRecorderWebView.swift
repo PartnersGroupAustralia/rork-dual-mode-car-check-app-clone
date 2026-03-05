@@ -48,6 +48,11 @@ struct FlowRecorderWebView: UIViewRepresentable {
         context.coordinator.webView = webView
         webViewRef(webView)
 
+        DebugLogger.shared.log("FlowRecorderWebView: created webView, loading \(url.absoluteString)", category: .flowRecorder, level: .info, metadata: [
+            "url": url.absoluteString,
+            "userAgent": profile.userAgent.prefix(60).description
+        ])
+
         let request = URLRequest(url: url)
         webView.load(request)
 
@@ -76,6 +81,7 @@ struct FlowRecorderWebView: UIViewRepresentable {
             var textboxMap = {};
             var flushInterval = null;
             var mouseDownTime = 0;
+            var errorCount = 0;
 
             function getSelector(el) {
                 if (!el || el === document || el === document.documentElement) return 'html';
@@ -132,63 +138,76 @@ struct FlowRecorderWebView: UIViewRepresentable {
 
             function record(type, evt, extra) {
                 if (!recording) return;
-                var ts = now();
-                var delta = lastTimestamp > 0 ? ts - lastTimestamp : 0;
-                lastTimestamp = ts;
+                try {
+                    var ts = now();
+                    var delta = lastTimestamp > 0 ? ts - lastTimestamp : 0;
+                    lastTimestamp = ts;
 
-                var action = {
-                    id: Date.now().toString(36) + Math.random().toString(36).substr(2,5),
-                    type: type,
-                    timestampMs: ts,
-                    deltaFromPreviousMs: delta
-                };
-
-                if (evt && typeof evt.clientX === 'number') {
-                    action.mousePosition = {
-                        x: evt.clientX,
-                        y: evt.clientY,
-                        viewportX: evt.pageX || evt.clientX,
-                        viewportY: evt.pageY || evt.clientY
+                    var action = {
+                        id: Date.now().toString(36) + Math.random().toString(36).substr(2,5),
+                        type: type,
+                        timestampMs: ts,
+                        deltaFromPreviousMs: delta
                     };
-                }
 
-                if (evt && evt.deltaX !== undefined) {
-                    action.scrollDeltaX = evt.deltaX;
-                    action.scrollDeltaY = evt.deltaY;
-                }
+                    if (evt && typeof evt.clientX === 'number') {
+                        action.mousePosition = {
+                            x: evt.clientX,
+                            y: evt.clientY,
+                            viewportX: evt.pageX || evt.clientX,
+                            viewportY: evt.pageY || evt.clientY
+                        };
+                    }
 
-                if (evt && evt.key !== undefined) {
-                    action.keyCode = evt.keyCode;
-                    action.key = evt.key;
-                    action.code = evt.code;
-                    action.charCode = evt.charCode;
-                    action.shiftKey = evt.shiftKey;
-                    action.ctrlKey = evt.ctrlKey;
-                    action.altKey = evt.altKey;
-                    action.metaKey = evt.metaKey;
-                }
+                    if (evt && evt.deltaX !== undefined) {
+                        action.scrollDeltaX = evt.deltaX;
+                        action.scrollDeltaY = evt.deltaY;
+                    }
 
-                if (evt && evt.target) {
-                    action.targetSelector = getSelector(evt.target);
-                    action.targetTagName = evt.target.tagName ? evt.target.tagName.toLowerCase() : '';
-                    action.targetType = evt.target.type || '';
-                    if (isTextInput(evt.target)) {
-                        action.textboxLabel = getTextboxLabel(evt.target);
+                    if (evt && evt.key !== undefined) {
+                        action.keyCode = evt.keyCode;
+                        action.key = evt.key;
+                        action.code = evt.code;
+                        action.charCode = evt.charCode;
+                        action.shiftKey = evt.shiftKey;
+                        action.ctrlKey = evt.ctrlKey;
+                        action.altKey = evt.altKey;
+                        action.metaKey = evt.metaKey;
+                    }
+
+                    if (evt && evt.target) {
+                        action.targetSelector = getSelector(evt.target);
+                        action.targetTagName = evt.target.tagName ? evt.target.tagName.toLowerCase() : '';
+                        action.targetType = evt.target.type || '';
+                        if (isTextInput(evt.target)) {
+                            action.textboxLabel = getTextboxLabel(evt.target);
+                        }
+                    }
+
+                    if (evt && evt.button !== undefined) {
+                        action.button = evt.button;
+                        action.buttons = evt.buttons;
+                    }
+
+                    action.isTrusted = evt ? evt.isTrusted : true;
+
+                    if (extra) {
+                        for (var k in extra) { action[k] = extra[k]; }
+                    }
+
+                    actions.push(action);
+                } catch(e) {
+                    errorCount++;
+                    if (errorCount <= 5) {
+                        try {
+                            window.webkit.messageHandlers.flowRecorder.postMessage(JSON.stringify({
+                                type: 'error',
+                                message: 'Record error: ' + e.message,
+                                errorCount: errorCount
+                            }));
+                        } catch(e2) {}
                     }
                 }
-
-                if (evt && evt.button !== undefined) {
-                    action.button = evt.button;
-                    action.buttons = evt.buttons;
-                }
-
-                action.isTrusted = evt ? evt.isTrusted : true;
-
-                if (extra) {
-                    for (var k in extra) { action[k] = extra[k]; }
-                }
-
-                actions.push(action);
             }
 
             function onMouseMove(e) { record('mouseMove', e); }
@@ -247,7 +266,19 @@ struct FlowRecorderWebView: UIViewRepresentable {
                         type: 'actions',
                         actions: batch
                     }));
-                } catch(e) {}
+                } catch(e) {
+                    errorCount++;
+                    actions = batch.concat(actions);
+                    if (errorCount <= 3) {
+                        try {
+                            window.webkit.messageHandlers.flowRecorder.postMessage(JSON.stringify({
+                                type: 'error',
+                                message: 'Flush failed: ' + e.message + ' (batch size: ' + batch.length + ')',
+                                errorCount: errorCount
+                            }));
+                        } catch(e2) {}
+                    }
+                }
             }
 
             function attachListeners() {
@@ -297,6 +328,7 @@ struct FlowRecorderWebView: UIViewRepresentable {
                     textboxCounter = 0;
                     textboxMap = {};
                     mouseDownTime = 0;
+                    errorCount = 0;
                     attachListeners();
                     flushInterval = setInterval(flush, 500);
                     try {
@@ -314,13 +346,15 @@ struct FlowRecorderWebView: UIViewRepresentable {
                     try {
                         window.webkit.messageHandlers.flowRecorder.postMessage(JSON.stringify({
                             type: 'status', status: 'recording_stopped',
-                            textboxMap: textboxMap
+                            textboxMap: textboxMap,
+                            errorCount: errorCount
                         }));
                     } catch(e) {}
                 },
                 isRecording: function() { return recording; },
                 getTextboxMap: function() { return textboxMap; },
-                getActionCount: function() { return actions.length; }
+                getActionCount: function() { return actions.length; },
+                getErrorCount: function() { return errorCount; }
             };
         })();
         """
@@ -329,6 +363,10 @@ struct FlowRecorderWebView: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: FlowRecorderWebView
         weak var webView: WKWebView?
+        private let logger = DebugLogger.shared
+        private var navigationStartTime: Date?
+        private var retryCount: Int = 0
+        private let maxRetries: Int = 3
 
         init(parent: FlowRecorderWebView) {
             self.parent = parent
@@ -344,13 +382,34 @@ struct FlowRecorderWebView: UIViewRepresentable {
         func handleMessage(_ body: String) {
             guard let data = body.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = json["type"] as? String else { return }
+                  let type = json["type"] as? String else {
+                logger.log("FlowRecorderWebView: received unparseable message (\(body.prefix(100)))", category: .flowRecorder, level: .warning)
+                return
+            }
+
+            if type == "error" {
+                let errorMessage = json["message"] as? String ?? "unknown"
+                let errorCount = json["errorCount"] as? Int ?? 0
+                logger.log("FlowRecorderWebView: JS error #\(errorCount) — \(errorMessage)", category: .flowRecorder, level: .error)
+                return
+            }
+
+            if type == "status" {
+                let status = json["status"] as? String ?? "unknown"
+                let jsErrors = json["errorCount"] as? Int ?? 0
+                logger.log("FlowRecorderWebView: status=\(status) jsErrors=\(jsErrors)", category: .flowRecorder, level: .debug)
+                return
+            }
 
             if type == "actions", let actionsArray = json["actions"] as? [[String: Any]] {
+                var parseErrors = 0
                 let decoded = actionsArray.compactMap { dict -> RecordedAction? in
                     guard let actionType = dict["type"] as? String,
                           let raType = RecordedActionType(rawValue: actionType),
-                          let ts = dict["timestampMs"] as? Double else { return nil }
+                          let ts = dict["timestampMs"] as? Double else {
+                        parseErrors += 1
+                        return nil
+                    }
 
                     var mousePos: RecordedMousePosition?
                     if let mp = dict["mousePosition"] as? [String: Any],
@@ -389,23 +448,99 @@ struct FlowRecorderWebView: UIViewRepresentable {
                         metaKey: dict["metaKey"] as? Bool
                     )
                 }
+
+                if parseErrors > 0 {
+                    logger.log("FlowRecorderWebView: \(parseErrors)/\(actionsArray.count) actions failed to parse", category: .flowRecorder, level: .warning)
+                }
+
                 parent.onActionsReceived(decoded)
             }
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            let pageTitle = webView.title ?? webView.url?.absoluteString ?? "Unknown"
-            parent.onPageLoaded(pageTitle)
+        nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            Task { @MainActor in
+                let pageTitle = webView.title ?? webView.url?.absoluteString ?? "Unknown"
+                let elapsed = self.navigationStartTime.map { Int(Date().timeIntervalSince($0) * 1000) }
+                self.logger.log("FlowRecorderWebView: page loaded — \(pageTitle)", category: .webView, level: .success, durationMs: elapsed, metadata: [
+                    "url": webView.url?.absoluteString ?? "N/A"
+                ])
+                self.retryCount = 0
+                self.parent.onPageLoaded(pageTitle)
 
-            if parent.isRecording {
-                webView.evaluateJavaScript(FlowRecorderWebView.recorderInjectionJS, completionHandler: nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    webView.evaluateJavaScript("window.__flowRecorder && window.__flowRecorder.start();", completionHandler: nil)
+                if self.parent.isRecording {
+                    webView.evaluateJavaScript(FlowRecorderWebView.recorderInjectionJS, completionHandler: nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        webView.evaluateJavaScript("window.__flowRecorder && window.__flowRecorder.start();", completionHandler: nil)
+                    }
                 }
             }
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in
+                let nsError = error as NSError
+                if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
+                self.logger.logError("FlowRecorderWebView: navigation failed", error: error, category: .webView, metadata: [
+                    "url": webView.url?.absoluteString ?? "N/A"
+                ])
+                self.attemptRetry(webView: webView, error: error)
+            }
+        }
+
+        nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            Task { @MainActor in
+                let nsError = error as NSError
+                if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
+                self.logger.logError("FlowRecorderWebView: provisional navigation failed", error: error, category: .webView, metadata: [
+                    "url": webView.url?.absoluteString ?? "N/A"
+                ])
+                self.attemptRetry(webView: webView, error: error)
+            }
+        }
+
+        nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            Task { @MainActor in
+                self.navigationStartTime = Date()
+                self.logger.log("FlowRecorderWebView: navigation started — \(webView.url?.absoluteString ?? "N/A")", category: .webView, level: .debug)
+            }
+        }
+
+        func attemptRetry(webView: WKWebView, error: Error) {
+            let classified = logger.classifyNetworkError(error)
+            guard classified.isRetryable && retryCount < maxRetries else {
+                if retryCount >= maxRetries {
+                    logger.logHealing(category: .webView, originalError: error.localizedDescription, healingAction: "Max retries (\(maxRetries)) exhausted", succeeded: false, attemptNumber: retryCount)
+                }
+                return
+            }
+
+            retryCount += 1
+            let backoff = min(1000 * retryCount, 5000)
+            logger.logHealing(category: .webView, originalError: classified.userMessage, healingAction: "Retrying navigation (attempt #\(retryCount), backoff \(backoff)ms)", succeeded: true, attemptNumber: retryCount)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(backoff) / 1000.0) { [weak self] in
+                guard let self, let url = self.parent.url as URL? else { return }
+                self.logger.log("FlowRecorderWebView: retry #\(self.retryCount) loading \(url.absoluteString)", category: .webView, level: .info)
+                webView.load(URLRequest(url: url))
+            }
+        }
+
+        nonisolated func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(.allow)
+        }
+
+        nonisolated func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            if let httpResponse = navigationResponse.response as? HTTPURLResponse {
+                Task { @MainActor in
+                    let statusCode = httpResponse.statusCode
+                    if statusCode >= 400 {
+                        self.logger.log("FlowRecorderWebView: HTTP \(statusCode) for \(httpResponse.url?.absoluteString ?? "N/A")", category: .webView, level: statusCode >= 500 ? .error : .warning, metadata: [
+                            "statusCode": "\(statusCode)",
+                            "url": httpResponse.url?.absoluteString ?? "N/A"
+                        ])
+                    }
+                }
+            }
             decisionHandler(.allow)
         }
     }

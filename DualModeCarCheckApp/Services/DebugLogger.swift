@@ -19,6 +19,8 @@ nonisolated enum DebugLogCategory: String, CaseIterable, Sendable, Identifiable,
     case evaluation = "Evaluation"
     case screenshot = "Screenshot"
     case timing = "Timing"
+    case healing = "Healing"
+    case flowRecorder = "Flow Recorder"
 
     var id: String { rawValue }
 
@@ -41,6 +43,8 @@ nonisolated enum DebugLogCategory: String, CaseIterable, Sendable, Identifiable,
         case .evaluation: "chart.bar.xaxis"
         case .screenshot: "camera.fill"
         case .timing: "stopwatch.fill"
+        case .healing: "cross.circle.fill"
+        case .flowRecorder: "record.circle.fill"
         }
     }
 
@@ -63,6 +67,8 @@ nonisolated enum DebugLogCategory: String, CaseIterable, Sendable, Identifiable,
         case .evaluation: "yellow"
         case .screenshot: "purple"
         case .timing: "orange"
+        case .healing: "green"
+        case .flowRecorder: "red"
         }
     }
 }
@@ -175,6 +181,43 @@ class DebugLogger {
     private var sessionTimers: [String: Date] = [:]
     private var stepTimers: [String: Date] = [:]
 
+    private(set) var errorHealingLog: [ErrorHealingEvent] = []
+    private(set) var retryTracker: [String: RetryState] = [:]
+    private let criticalLogKey = "debug_critical_logs_v1"
+
+    struct ErrorHealingEvent: Identifiable {
+        let id: UUID = UUID()
+        let timestamp: Date
+        let category: DebugLogCategory
+        let originalError: String
+        let healingAction: String
+        let succeeded: Bool
+        let attemptNumber: Int
+        let durationMs: Int?
+    }
+
+    struct RetryState {
+        var attempts: Int = 0
+        var maxAttempts: Int = 3
+        var lastAttempt: Date?
+        var lastError: String?
+        var backoffMs: Int = 1000
+        var isExhausted: Bool { attempts >= maxAttempts }
+
+        mutating func recordAttempt(error: String?) {
+            attempts += 1
+            lastAttempt = Date()
+            lastError = error
+            backoffMs = min(backoffMs * 2, 30000)
+        }
+
+        mutating func reset() {
+            attempts = 0
+            lastError = nil
+            backoffMs = 1000
+        }
+    }
+
     var filteredEntries: [DebugLogEntry] {
         entries
     }
@@ -187,6 +230,20 @@ class DebugLogger {
 
     var warningCount: Int {
         entries.filter { $0.level == .warning }.count
+    }
+
+    var criticalCount: Int {
+        entries.filter { $0.level == .critical }.count
+    }
+
+    var healingSuccessRate: Double {
+        guard !errorHealingLog.isEmpty else { return 1.0 }
+        let successes = errorHealingLog.filter(\.succeeded).count
+        return Double(successes) / Double(errorHealingLog.count)
+    }
+
+    var recentErrors: [DebugLogEntry] {
+        Array(entries.filter { $0.level >= .error }.prefix(50))
     }
 
     func log(
@@ -217,6 +274,88 @@ class DebugLogger {
         if entries.count > maxEntries {
             entries = Array(entries.prefix(maxEntries))
         }
+
+        if level >= .critical {
+            persistCriticalEntries()
+        }
+    }
+
+    func logError(
+        _ message: String,
+        error: Error,
+        category: DebugLogCategory = .system,
+        sessionId: String? = nil,
+        metadata: [String: String]? = nil
+    ) {
+        let nsError = error as NSError
+        let detail = "[\(nsError.domain):\(nsError.code)] \(nsError.localizedDescription)"
+        var enrichedMeta = metadata ?? [:]
+        enrichedMeta["errorDomain"] = nsError.domain
+        enrichedMeta["errorCode"] = "\(nsError.code)"
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            enrichedMeta["underlyingError"] = "[\(underlyingError.domain):\(underlyingError.code)] \(underlyingError.localizedDescription)"
+        }
+        if let urlError = error as? URLError {
+            enrichedMeta["urlErrorCode"] = "\(urlError.code.rawValue)"
+            enrichedMeta["failingURL"] = urlError.failureURLString ?? "N/A"
+        }
+        log(message, category: category, level: .error, detail: detail, sessionId: sessionId, metadata: enrichedMeta)
+    }
+
+    func logHealing(
+        category: DebugLogCategory,
+        originalError: String,
+        healingAction: String,
+        succeeded: Bool,
+        attemptNumber: Int = 1,
+        durationMs: Int? = nil,
+        sessionId: String? = nil
+    ) {
+        let event = ErrorHealingEvent(
+            timestamp: Date(),
+            category: category,
+            originalError: originalError,
+            healingAction: healingAction,
+            succeeded: succeeded,
+            attemptNumber: attemptNumber,
+            durationMs: durationMs
+        )
+        errorHealingLog.insert(event, at: 0)
+        if errorHealingLog.count > 500 { errorHealingLog = Array(errorHealingLog.prefix(500)) }
+
+        let level: DebugLogLevel = succeeded ? .success : .warning
+        log(
+            "HEAL [\(succeeded ? "OK" : "FAIL")] attempt #\(attemptNumber): \(healingAction)",
+            category: category,
+            level: level,
+            detail: "Original error: \(originalError)",
+            sessionId: sessionId,
+            durationMs: durationMs
+        )
+    }
+
+    func getRetryState(for key: String, maxAttempts: Int = 3) -> RetryState {
+        if retryTracker[key] == nil {
+            retryTracker[key] = RetryState(maxAttempts: maxAttempts)
+        }
+        return retryTracker[key]!
+    }
+
+    func recordRetryAttempt(for key: String, error: String?) {
+        if retryTracker[key] == nil {
+            retryTracker[key] = RetryState()
+        }
+        retryTracker[key]?.recordAttempt(error: error)
+    }
+
+    func resetRetryState(for key: String) {
+        retryTracker[key]?.reset()
+    }
+
+    func shouldRetry(key: String) -> (shouldRetry: Bool, backoffMs: Int) {
+        let state = getRetryState(for: key)
+        if state.isExhausted { return (false, 0) }
+        return (true, state.backoffMs)
     }
 
     func startTimer(key: String) {
@@ -247,6 +386,8 @@ class DebugLogger {
         entries.removeAll()
         sessionTimers.removeAll()
         stepTimers.removeAll()
+        errorHealingLog.removeAll()
+        retryTracker.removeAll()
     }
 
     func exportFullLog() -> String {
@@ -256,6 +397,8 @@ class DebugLogger {
         Total Entries: \(entries.count)
         Errors: \(errorCount)
         Warnings: \(warningCount)
+        Critical: \(criticalCount)
+        Healing Events: \(errorHealingLog.count) (\(String(format: "%.0f%%", healingSuccessRate * 100)) success)
         ========================
         
         """
@@ -285,6 +428,16 @@ class DebugLogger {
         return filtered.map(\.exportLine).joined(separator: "\n")
     }
 
+    func exportHealingLog() -> String {
+        let header = "=== ERROR HEALING LOG (\(errorHealingLog.count) events, \(String(format: "%.0f%%", healingSuccessRate * 100)) success) ===\n"
+        let lines = errorHealingLog.map { event in
+            let status = event.succeeded ? "OK" : "FAIL"
+            let dur = event.durationMs.map { " [\($0)ms]" } ?? ""
+            return "[\(DateFormatters.timeWithMillis.string(from: event.timestamp))] [\(status)] [\(event.category.rawValue)] #\(event.attemptNumber)\(dur) \(event.healingAction) | Error: \(event.originalError)"
+        }.joined(separator: "\n")
+        return header + lines
+    }
+
     func entriesForSession(_ sessionId: String) -> [DebugLogEntry] {
         entries.filter { $0.sessionId == sessionId }
     }
@@ -308,5 +461,40 @@ class DebugLogger {
             counts[entry.level, default: 0] += 1
         }
         return counts.map { ($0.key, $0.value) }.sorted { $0.level < $1.level }
+    }
+
+    func classifyNetworkError(_ error: Error) -> (code: Int, domain: String, userMessage: String, isRetryable: Bool) {
+        let nsError = error as NSError
+        let retryableCodes: Set<Int> = [
+            NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost,
+            NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost,
+            NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed,
+            NSURLErrorSecureConnectionFailed
+        ]
+        let isRetryable = nsError.domain == NSURLErrorDomain && retryableCodes.contains(nsError.code)
+        let userMessage: String
+        switch nsError.code {
+        case NSURLErrorTimedOut: userMessage = "Connection timed out"
+        case NSURLErrorNotConnectedToInternet: userMessage = "No internet connection"
+        case NSURLErrorCannotFindHost: userMessage = "DNS resolution failed"
+        case NSURLErrorCannotConnectToHost: userMessage = "Cannot connect to server"
+        case NSURLErrorNetworkConnectionLost: userMessage = "Network connection lost"
+        case NSURLErrorDNSLookupFailed: userMessage = "DNS lookup failed"
+        case NSURLErrorSecureConnectionFailed: userMessage = "SSL/TLS handshake failed"
+        default: userMessage = nsError.localizedDescription
+        }
+        return (nsError.code, nsError.domain, userMessage, isRetryable)
+    }
+
+    private func persistCriticalEntries() {
+        let criticals = Array(entries.filter { $0.level >= .error }.prefix(200))
+        if let data = try? JSONEncoder().encode(criticals) {
+            UserDefaults.standard.set(data, forKey: criticalLogKey)
+        }
+    }
+
+    func loadPersistedCriticalLogs() -> [DebugLogEntry] {
+        guard let data = UserDefaults.standard.data(forKey: criticalLogKey) else { return [] }
+        return (try? JSONDecoder().decode([DebugLogEntry].self, from: data)) ?? []
     }
 }
