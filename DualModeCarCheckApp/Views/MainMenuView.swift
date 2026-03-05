@@ -22,13 +22,13 @@ struct MainMenuView: View {
                         joeZone(geo: geo)
                         ignitionZone(geo: geo)
                     }
-                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.48)
+                    .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.52)
 
-                    ppsrZone(geo: geo)
-                        .frame(height: (geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom) * 0.22)
-
-                    superTestZone(geo: geo)
-                        .frame(maxHeight: .infinity)
+                    HStack(spacing: 0) {
+                        ppsrZone(geo: geo)
+                        superTestZone(geo: geo)
+                    }
+                    .frame(maxHeight: .infinity)
 
                     Spacer().frame(height: geo.safeAreaInsets.bottom + 4)
                 }
