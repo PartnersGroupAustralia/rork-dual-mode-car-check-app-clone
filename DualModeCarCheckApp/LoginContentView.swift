@@ -1992,6 +1992,11 @@ struct LoginMoreMenuView: View {
     @State private var exportDocument: CardExportDocument?
     @State private var showFileExporter: Bool = false
     @State private var showCopiedToast: Bool = false
+    @State private var showImportSheet: Bool = false
+    @State private var importConfigText: String = ""
+    @State private var importResult: AppDataExportService.ImportResult?
+    @State private var showImportFileImporter: Bool = false
+    @State private var showImportFilePicker: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -2112,6 +2117,30 @@ struct LoginMoreMenuView: View {
                     } label: {
                         moreRow(icon: "square.and.arrow.up.fill", title: "Export All to File", subtitle: "Save complete state as .txt", color: .blue)
                     }
+
+                    Button {
+                        let json = AppDataExportService.shared.exportJSON()
+                        exportDocument = CardExportDocument(text: json)
+                        showFileExporter = true
+                    } label: {
+                        moreRow(icon: "doc.badge.arrow.up.fill", title: "Export JSON Config", subtitle: "Restorable JSON backup of all configs", color: .teal)
+                    }
+                }
+
+                Section("Import & Restore") {
+                    Button {
+                        importConfigText = ""
+                        importResult = nil
+                        showImportSheet = true
+                    } label: {
+                        moreRow(icon: "square.and.arrow.down.fill", title: "Import JSON Config", subtitle: "Paste or load exported JSON to restore", color: .green)
+                    }
+
+                    Button {
+                        showImportFilePicker = true
+                    } label: {
+                        moreRow(icon: "folder.badge.plus", title: "Import from File", subtitle: "Load a .json or .txt config file", color: .orange)
+                    }
                 }
 
                 if vm.debugMode {
@@ -2211,6 +2240,124 @@ struct LoginMoreMenuView: View {
             case .failure(let error): vm.log("Export failed: \(error.localizedDescription)", level: .error)
             }
         }
+        .sheet(isPresented: $showImportSheet) { importConfigSheet }
+        .fileImporter(isPresented: $showImportFilePicker, allowedContentTypes: [.json, .plainText], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                guard url.startAccessingSecurityScopedResource() else { return }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
+                    importConfigText = text
+                    importResult = nil
+                    showImportSheet = true
+                }
+            case .failure(let error):
+                vm.log("File import error: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+
+    private var importConfigSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                HStack(spacing: 8) {
+                    Button {
+                        if let clip = UIPasteboard.general.string { importConfigText = clip }
+                    } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+
+                    Button { showImportFileImporter = true } label: {
+                        Label("Load File", systemImage: "folder").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+
+                    Spacer()
+
+                    let byteCount = importConfigText.utf8.count
+                    if byteCount > 0 {
+                        Text("\(byteCount / 1024)KB")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+
+                TextEditor(text: $importConfigText)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 180)
+                    .overlay(alignment: .topLeading) {
+                        if importConfigText.isEmpty {
+                            Text("Paste exported JSON config here...")
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.quaternary)
+                                .padding(.horizontal, 14).padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                if let result = importResult {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(result.summary)
+                            .font(.system(.caption, design: .monospaced, weight: .bold))
+                            .foregroundStyle(.green)
+                        if !result.errors.isEmpty {
+                            ForEach(result.errors, id: \.self) { error in
+                                Text(error)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+
+                Spacer()
+            }
+            .padding(.top)
+            .navigationTitle("Import Config").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showImportSheet = false; importConfigText = ""; importResult = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let result = AppDataExportService.shared.importJSON(importConfigText)
+                        importResult = result
+                        vm.log(result.summary, level: result.errors.isEmpty ? .success : .warning)
+                        if result.errors.isEmpty {
+                            Task {
+                                try? await Task.sleep(for: .seconds(2))
+                                showImportSheet = false
+                                importConfigText = ""
+                                importResult = nil
+                            }
+                        }
+                    }
+                    .disabled(importConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .fileImporter(isPresented: $showImportFileImporter, allowedContentTypes: [.json, .plainText], allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    guard url.startAccessingSecurityScopedResource() else { return }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
+                        importConfigText = text
+                    }
+                case .failure(let error):
+                    vm.log("File import error: \(error.localizedDescription)", level: .error)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 
     private func dateStamp() -> String {
