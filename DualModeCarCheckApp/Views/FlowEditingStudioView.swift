@@ -6,7 +6,6 @@ struct FlowEditingStudioView: View {
     @State private var showActionEditor: Bool = false
     @State private var editingAction: RecordedAction?
     @State private var editingIndex: Int?
-    @State private var showTimingEditor: Bool = false
     @State private var showBulkTimingSheet: Bool = false
     @State private var showDuplicateSheet: Bool = false
     @State private var showTextboxMappingEditor: Bool = false
@@ -18,7 +17,11 @@ struct FlowEditingStudioView: View {
     @State private var globalTimeScale: Double = 1.0
     @State private var newDuplicateName: String = ""
     @State private var showDeleteConfirmation: Bool = false
-    @State private var showExportSheet: Bool = false
+    @State private var showOptimizeSheet: Bool = false
+    @State private var showSettingsSheet: Bool = false
+    @State private var showActionTestSheet: Bool = false
+    @State private var testingAction: RecordedAction?
+    @State private var automationSettings: AutomationSettings = AutomationSettings()
 
     let onSave: (RecordedFlow) -> Void
     let onDuplicate: (RecordedFlow) -> Void
@@ -74,22 +77,20 @@ struct FlowEditingStudioView: View {
                     Button { showBulkTimingSheet = true } label: {
                         Label("Bulk Timing Edit", systemImage: "clock.arrow.2.circlepath")
                     }
+                    Button { showOptimizeSheet = true } label: {
+                        Label("Optimize Flow", systemImage: "wand.and.stars")
+                    }
                     Button { showDuplicateSheet = true } label: {
                         Label("Duplicate Flow", systemImage: "doc.on.doc")
                     }
-                    Button {
-                        stripMouseMoves()
-                    } label: {
+                    Button { showSettingsSheet = true } label: {
+                        Label("Automation Settings", systemImage: "gearshape.2.fill")
+                    }
+                    Divider()
+                    Button { stripMouseMoves() } label: {
                         Label("Strip Mouse Moves", systemImage: "cursorarrow.slash")
                     }
-                    Button {
-                        optimizeTimings()
-                    } label: {
-                        Label("Optimize Timings", systemImage: "gauge.with.dots.needle.67percent")
-                    }
-                    Button {
-                        normalizeCoordinates()
-                    } label: {
+                    Button { normalizeCoordinates() } label: {
                         Label("Normalize Coordinates", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
                     Divider()
@@ -162,6 +163,32 @@ struct FlowEditingStudioView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showOptimizeSheet) {
+            NavigationStack {
+                FlowOptimizeView(flow: $flow)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                FlowSettingsView(settings: $automationSettings)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showActionTestSheet) {
+            if let action = testingAction {
+                NavigationStack {
+                    ActionTestView(action: action)
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+            }
         }
         .alert("Delete Selected Actions?", isPresented: $showDeleteConfirmation) {
             Button("Delete \(selectedActionIds.count)", role: .destructive) {
@@ -337,6 +364,10 @@ struct FlowEditingStudioView: View {
                             flow.actions.remove(at: realIndex)
                             flow.actionCount = flow.actions.count
                             selectedActionIds.remove(action.id)
+                        },
+                        onTestAction: {
+                            testingAction = action
+                            showActionTestSheet = true
                         }
                     )
                 }
@@ -380,42 +411,6 @@ struct FlowEditingStudioView: View {
     private func stripMouseMoves() {
         flow.actions.removeAll { $0.type == .mouseMove }
         flow.actionCount = flow.actions.count
-    }
-
-    private func optimizeTimings() {
-        for i in 0..<flow.actions.count {
-            let delta = flow.actions[i].deltaFromPreviousMs
-            if delta > 3000 {
-                let capped = min(delta, 3000.0)
-                flow.actions[i] = RecordedAction(
-                    id: flow.actions[i].id,
-                    type: flow.actions[i].type,
-                    timestampMs: flow.actions[i].timestampMs,
-                    deltaFromPreviousMs: capped,
-                    mousePosition: flow.actions[i].mousePosition,
-                    scrollDeltaX: flow.actions[i].scrollDeltaX,
-                    scrollDeltaY: flow.actions[i].scrollDeltaY,
-                    keyCode: flow.actions[i].keyCode,
-                    key: flow.actions[i].key,
-                    code: flow.actions[i].code,
-                    charCode: flow.actions[i].charCode,
-                    targetSelector: flow.actions[i].targetSelector,
-                    targetTagName: flow.actions[i].targetTagName,
-                    targetType: flow.actions[i].targetType,
-                    textboxLabel: flow.actions[i].textboxLabel,
-                    textContent: flow.actions[i].textContent,
-                    button: flow.actions[i].button,
-                    buttons: flow.actions[i].buttons,
-                    holdDurationMs: flow.actions[i].holdDurationMs,
-                    isTrusted: flow.actions[i].isTrusted,
-                    shiftKey: flow.actions[i].shiftKey,
-                    ctrlKey: flow.actions[i].ctrlKey,
-                    altKey: flow.actions[i].altKey,
-                    metaKey: flow.actions[i].metaKey
-                )
-            }
-        }
-        flow.totalDurationMs = flow.actions.reduce(0) { $0 + $1.deltaFromPreviousMs }
     }
 
     private func normalizeCoordinates() {
@@ -514,6 +509,7 @@ private struct ActionRowView: View {
     let onInsertBefore: () -> Void
     let onInsertAfter: () -> Void
     let onDelete: () -> Void
+    let onTestAction: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -567,6 +563,9 @@ private struct ActionRowView: View {
             Button { onEdit() } label: {
                 Label("Edit Action", systemImage: "pencil")
             }
+            Button { onTestAction() } label: {
+                Label("Test Action Methods", systemImage: "play.square.stack")
+            }
             Button { onInsertBefore() } label: {
                 Label("Insert Before", systemImage: "arrow.up.to.line")
             }
@@ -586,6 +585,12 @@ private struct ActionRowView: View {
                 Label("Edit", systemImage: "pencil")
             }
             .tint(.blue)
+        }
+        .swipeActions(edge: .leading) {
+            Button { onTestAction() } label: {
+                Label("Test", systemImage: "play.square.stack")
+            }
+            .tint(.purple)
         }
     }
 
@@ -1052,7 +1057,7 @@ struct TextboxMappingEditorView: View {
                                 Text(mapping.label)
                                     .font(.system(.caption, design: .monospaced, weight: .bold))
                                 Spacer()
-                                Text("→ \(mapping.placeholderKey)")
+                                Text("-> \(mapping.placeholderKey)")
                                     .font(.caption2)
                                     .foregroundStyle(.blue)
                             }
@@ -1215,5 +1220,441 @@ struct InsertActionView: View {
             textContent: textContent.isEmpty ? nil : textContent
         )
         onInsert(action)
+    }
+}
+
+// MARK: - Flow Optimize View
+
+struct FlowOptimizeView: View {
+    @Binding var flow: RecordedFlow
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var settings = FlowOptimizationSettings()
+    @State private var previewActionCount: Int = 0
+    @State private var previewDurationMs: Double = 0
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Current")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(flow.actions.count) actions, \(flow.formattedDuration)")
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    if previewActionCount > 0 {
+                        HStack {
+                            Text("After Optimize")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Text("\(previewActionCount) actions, \(String(format: "%.1fs", previewDurationMs / 1000))")
+                                .font(.system(.caption, design: .monospaced, weight: .bold))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+            } header: {
+                Label("Preview", systemImage: "eye")
+            }
+
+            Section("Mouse Moves") {
+                Toggle("Strip Redundant Moves", isOn: $settings.stripRedundantMouseMoves)
+                if settings.stripRedundantMouseMoves {
+                    Stepper("Keep every \(settings.mouseMoveSampleRate)th", value: $settings.mouseMoveSampleRate, in: 1...50)
+                }
+            }
+
+            Section("Timing Constraints") {
+                HStack {
+                    Text("Max Delay Cap")
+                    Spacer()
+                    TextField("ms", value: $settings.capMaxDelay, format: .number)
+                        .keyboardType(.numberPad)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                        .font(.system(.body, design: .monospaced))
+                    Text("ms").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Min Delay Floor")
+                    Spacer()
+                    TextField("ms", value: $settings.enforceMinDelay, format: .number)
+                        .keyboardType(.numberPad)
+                        .frame(width: 80)
+                        .multilineTextAlignment(.trailing)
+                        .font(.system(.body, design: .monospaced))
+                    Text("ms").foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Variance & Randomness") {
+                Toggle("Add Timing Variance", isOn: $settings.addTimingVariance)
+                if settings.addTimingVariance {
+                    VStack(alignment: .leading) {
+                        Text("Variance: \u{00B1}\(Int(settings.variancePercent))%")
+                            .font(.system(.body, design: .monospaced, weight: .bold))
+                        Slider(value: $settings.variancePercent, in: 5...50, step: 5)
+                            .tint(.orange)
+                    }
+                }
+                Toggle("Gaussian Distribution", isOn: $settings.gaussianDistribution)
+            }
+
+            Section("Speed") {
+                VStack(alignment: .leading) {
+                    Text("Time Scale: \(String(format: "%.1fx", settings.applyTimeScale))")
+                        .font(.system(.body, design: .monospaced, weight: .bold))
+                    Slider(value: $settings.applyTimeScale, in: 0.1...5.0, step: 0.1)
+                        .tint(.cyan)
+                    Text("< 1.0 = faster, > 1.0 = slower")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Human Pauses") {
+                Toggle("Add Human Pauses", isOn: $settings.addHumanPauses)
+                if settings.addHumanPauses {
+                    HStack {
+                        Text("Min")
+                        Spacer()
+                        TextField("ms", value: $settings.humanPauseMinMs, format: .number)
+                            .keyboardType(.numberPad)
+                            .frame(width: 80)
+                            .multilineTextAlignment(.trailing)
+                            .font(.system(.body, design: .monospaced))
+                        Text("ms").foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Max")
+                        Spacer()
+                        TextField("ms", value: $settings.humanPauseMaxMs, format: .number)
+                            .keyboardType(.numberPad)
+                            .frame(width: 80)
+                            .multilineTextAlignment(.trailing)
+                            .font(.system(.body, design: .monospaced))
+                        Text("ms").foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    previewOptimization()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Preview", systemImage: "eye")
+                            .font(.headline)
+                        Spacer()
+                    }
+                }
+
+                Button {
+                    applyOptimization()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Apply Optimization", systemImage: "wand.and.stars")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                    .background(.blue)
+                    .clipShape(.rect(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .navigationTitle("Optimize Flow")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+
+    private func previewOptimization() {
+        let optimized = FlowPlaybackEngine.shared.optimizeFlow(flow, settings: settings)
+        previewActionCount = optimized.actions.count
+        previewDurationMs = optimized.totalDurationMs
+    }
+
+    private func applyOptimization() {
+        let optimized = FlowPlaybackEngine.shared.optimizeFlow(flow, settings: settings)
+        flow = optimized
+        dismiss()
+    }
+}
+
+// MARK: - Action Test View
+
+struct ActionTestView: View {
+    let action: RecordedAction
+    @Environment(\.dismiss) private var dismiss
+    @State private var results: [ActionAutomationMethod: Bool] = [:]
+    @State private var isTesting: Bool = false
+    @State private var currentMethod: ActionAutomationMethod?
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Type") {
+                    Text(action.type.rawValue)
+                        .font(.system(.caption, design: .monospaced, weight: .bold))
+                }
+                if let pos = action.mousePosition {
+                    LabeledContent("Position") {
+                        Text("(\(Int(pos.x)), \(Int(pos.y)))")
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                }
+                if let label = action.textboxLabel {
+                    LabeledContent("Label") {
+                        Text(label)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.blue)
+                    }
+                }
+            } header: {
+                Label("Action Details", systemImage: "info.circle")
+            }
+
+            Section {
+                ForEach(ActionAutomationMethod.allCases, id: \.self) { method in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(method.rawValue)
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            Text(descriptionFor(method))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        if currentMethod == method && isTesting {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        } else if let passed = results[method] {
+                            Image(systemName: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(passed ? .green : .red)
+                        }
+                    }
+                }
+            } header: {
+                Label("Automation Methods", systemImage: "play.square.stack")
+            }
+
+            Section {
+                Button {
+                    isTesting = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        if isTesting {
+                            ProgressView()
+                                .padding(.trailing, 8)
+                            Text("Testing...")
+                        } else {
+                            Label("Test All Methods", systemImage: "play.fill")
+                        }
+                        Spacer()
+                    }
+                    .font(.headline)
+                }
+                .disabled(isTesting)
+            }
+        }
+        .navigationTitle("Test Action")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }
+            }
+        }
+    }
+
+    private func descriptionFor(_ method: ActionAutomationMethod) -> String {
+        switch method {
+        case .humanClick: return "Full pointer+mouse event chain"
+        case .jsClick: return "Direct el.click() call"
+        case .pointerDispatch: return "Touch + pointer event dispatch"
+        case .formSubmit: return "Find form and submit directly"
+        case .enterKey: return "Dispatch Enter key to active element"
+        case .ocrTextDetect: return "Screenshot OCR to find target text"
+        case .coordinateClick: return "elementFromPoint + click"
+        case .visionMLDetect: return "Vision ML login element detection"
+        case .screenshotCropNav: return "Crop area, OCR, relocate and click"
+        case .focusThenClick: return "Focus element then fire click"
+        case .tabNavigation: return "Tab through focusable elements"
+        case .nativeSetterFill: return "Native property descriptor value set"
+        case .execCommandInsert: return "document.execCommand insertText"
+        case .mouseHoverThenClick: return "Hover delay then mouse click"
+        }
+    }
+}
+
+// MARK: - Flow Settings View
+
+struct FlowSettingsView: View {
+    @Binding var settings: AutomationSettings
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            Section("Page Loading") {
+                Stepper("Timeout: \(Int(settings.pageLoadTimeout))s", value: $settings.pageLoadTimeout, in: 5...120)
+                Stepper("Retries: \(settings.pageLoadRetries)", value: $settings.pageLoadRetries, in: 0...10)
+                Stepper("JS Render Wait: \(settings.waitForJSRenderMs)ms", value: $settings.waitForJSRenderMs, in: 500...15000, step: 500)
+                Toggle("Full Reset on Final Retry", isOn: $settings.fullSessionResetOnFinalRetry)
+            }
+
+            Section("Field Detection") {
+                Toggle("Field Verification", isOn: $settings.fieldVerificationEnabled)
+                Toggle("Auto Calibration", isOn: $settings.autoCalibrationEnabled)
+                Toggle("Vision ML Fallback", isOn: $settings.visionMLCalibrationFallback)
+                VStack(alignment: .leading) {
+                    Text("Confidence: \(String(format: "%.1f", settings.calibrationConfidenceThreshold))")
+                        .font(.system(.caption, design: .monospaced))
+                    Slider(value: $settings.calibrationConfidenceThreshold, in: 0.1...1.0, step: 0.05)
+                }
+            }
+
+            Section("Credential Entry") {
+                Stepper("Min Type Speed: \(settings.typingSpeedMinMs)ms", value: $settings.typingSpeedMinMs, in: 5...500, step: 5)
+                Stepper("Max Type Speed: \(settings.typingSpeedMaxMs)ms", value: $settings.typingSpeedMaxMs, in: 20...1000, step: 10)
+                Toggle("Typing Jitter", isOn: $settings.typingJitterEnabled)
+                Toggle("Occasional Backspace", isOn: $settings.occasionalBackspaceEnabled)
+                Stepper("Field Focus Delay: \(settings.fieldFocusDelayMs)ms", value: $settings.fieldFocusDelayMs, in: 0...2000, step: 50)
+                Stepper("Inter-Field Delay: \(settings.interFieldDelayMs)ms", value: $settings.interFieldDelayMs, in: 0...3000, step: 50)
+            }
+
+            Section("Login Button Detection") {
+                Picker("Mode", selection: $settings.loginButtonDetectionMode) {
+                    ForEach(AutomationSettings.ButtonDetectionMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                Picker("Click Method", selection: $settings.loginButtonClickMethod) {
+                    ForEach(AutomationSettings.ButtonClickMethod.allCases, id: \.self) { m in
+                        Text(m.rawValue).tag(m)
+                    }
+                }
+                Stepper("Pre-Click: \(settings.loginButtonPreClickDelayMs)ms", value: $settings.loginButtonPreClickDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Click: \(settings.loginButtonPostClickDelayMs)ms", value: $settings.loginButtonPostClickDelayMs, in: 0...5000, step: 50)
+                Toggle("Double Click Guard", isOn: $settings.loginButtonDoubleClickGuard)
+                Toggle("Scroll Into View", isOn: $settings.loginButtonScrollIntoView)
+                Toggle("Wait For Enabled", isOn: $settings.loginButtonWaitForEnabled)
+                Toggle("Hover Before Click", isOn: $settings.loginButtonHoverBeforeClick)
+                Toggle("Focus Before Click", isOn: $settings.loginButtonFocusBeforeClick)
+                Toggle("Click Offset Jitter", isOn: $settings.loginButtonClickOffsetJitter)
+                Toggle("Enter Key Fallback", isOn: $settings.loginButtonEnterKeyFallback)
+                Toggle("Form Submit Fallback", isOn: $settings.loginButtonFormSubmitFallback)
+                Toggle("Vision ML Fallback", isOn: $settings.loginButtonVisionMLFallback)
+                Toggle("OCR Fallback", isOn: $settings.loginButtonOCRFallback)
+                Toggle("Coordinate Fallback", isOn: $settings.loginButtonCoordinateFallback)
+                Toggle("Shadow DOM Search", isOn: $settings.loginButtonShadowDOMSearch)
+            }
+
+            Section("Submit Behavior") {
+                Stepper("Retry Count: \(settings.submitRetryCount)", value: $settings.submitRetryCount, in: 0...10)
+                Stepper("Retry Delay: \(settings.submitRetryDelayMs)ms", value: $settings.submitRetryDelayMs, in: 100...10000, step: 100)
+                Toggle("Rapid Poll", isOn: $settings.rapidPollEnabled)
+            }
+
+            Section("Post-Submit Evaluation") {
+                Toggle("Welcome Text Detection", isOn: $settings.welcomeTextDetection)
+                Toggle("Redirect Detection", isOn: $settings.redirectDetection)
+                Toggle("Error Banner Detection", isOn: $settings.errorBannerDetection)
+                Toggle("Content Change Detection", isOn: $settings.contentChangeDetection)
+                Picker("Strictness", selection: $settings.evaluationStrictness) {
+                    ForEach(AutomationSettings.EvaluationStrictness.allCases, id: \.self) { s in
+                        Text(s.rawValue).tag(s)
+                    }
+                }
+            }
+
+            Section("Stealth") {
+                Toggle("Stealth JS Injection", isOn: $settings.stealthJSInjection)
+                Toggle("Fingerprint Spoofing", isOn: $settings.fingerprintSpoofing)
+                Toggle("User Agent Rotation", isOn: $settings.userAgentRotation)
+                Toggle("Viewport Randomization", isOn: $settings.viewportRandomization)
+                Toggle("WebGL Noise", isOn: $settings.webGLNoise)
+                Toggle("Canvas Noise", isOn: $settings.canvasNoise)
+                Toggle("Audio Context Noise", isOn: $settings.audioContextNoise)
+            }
+
+            Section("Human Simulation") {
+                Toggle("Human Mouse Movement", isOn: $settings.humanMouseMovement)
+                Toggle("Human Scroll Jitter", isOn: $settings.humanScrollJitter)
+                Toggle("Random Pre-Action Pause", isOn: $settings.randomPreActionPause)
+                Stepper("Pre Pause Min: \(settings.preActionPauseMinMs)ms", value: $settings.preActionPauseMinMs, in: 0...1000, step: 10)
+                Stepper("Pre Pause Max: \(settings.preActionPauseMaxMs)ms", value: $settings.preActionPauseMaxMs, in: 0...3000, step: 50)
+                Toggle("Gaussian Distribution", isOn: $settings.gaussianTimingDistribution)
+            }
+
+            Section("Time Delays") {
+                Stepper("Pre-Navigation: \(settings.preNavigationDelayMs)ms", value: $settings.preNavigationDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Navigation: \(settings.postNavigationDelayMs)ms", value: $settings.postNavigationDelayMs, in: 0...5000, step: 50)
+                Stepper("Pre-Typing: \(settings.preTypingDelayMs)ms", value: $settings.preTypingDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Typing: \(settings.postTypingDelayMs)ms", value: $settings.postTypingDelayMs, in: 0...5000, step: 50)
+                Stepper("Pre-Submit: \(settings.preSubmitDelayMs)ms", value: $settings.preSubmitDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Submit: \(settings.postSubmitDelayMs)ms", value: $settings.postSubmitDelayMs, in: 0...5000, step: 50)
+                Stepper("Page Stabilization: \(settings.pageStabilizationDelayMs)ms", value: $settings.pageStabilizationDelayMs, in: 0...10000, step: 100)
+                Stepper("AJAX Settle: \(settings.ajaxSettleDelayMs)ms", value: $settings.ajaxSettleDelayMs, in: 0...10000, step: 100)
+                Stepper("DOM Mutation Settle: \(settings.domMutationSettleMs)ms", value: $settings.domMutationSettleMs, in: 0...5000, step: 100)
+                Toggle("Delay Randomization", isOn: $settings.delayRandomizationEnabled)
+                if settings.delayRandomizationEnabled {
+                    Stepper("Randomize \u{00B1}\(settings.delayRandomizationPercent)%", value: $settings.delayRandomizationPercent, in: 5...50, step: 5)
+                }
+            }
+
+            Section("Form Interaction") {
+                Toggle("Clear Fields Before Typing", isOn: $settings.clearFieldsBeforeTyping)
+                Picker("Clear Method", selection: $settings.clearFieldMethod) {
+                    ForEach(AutomationSettings.FieldClearMethod.allCases, id: \.self) { m in
+                        Text(m.rawValue).tag(m)
+                    }
+                }
+                Toggle("Tab Between Fields", isOn: $settings.tabBetweenFields)
+                Toggle("Click Field Before Typing", isOn: $settings.clickFieldBeforeTyping)
+                Toggle("Verify After Typing", isOn: $settings.verifyFieldValueAfterTyping)
+                Toggle("Retype on Failure", isOn: $settings.retypeOnVerificationFailure)
+                Toggle("Dismiss Autofill", isOn: $settings.dismissAutofillSuggestions)
+            }
+
+            Section("Session Management") {
+                Picker("Isolation", selection: $settings.sessionIsolation) {
+                    ForEach(AutomationSettings.SessionIsolationMode.allCases, id: \.self) { m in
+                        Text(m.rawValue).tag(m)
+                    }
+                }
+                Toggle("Clear Cookies", isOn: $settings.clearCookiesBetweenAttempts)
+                Toggle("Clear LocalStorage", isOn: $settings.clearLocalStorageBetweenAttempts)
+                Toggle("Clear SessionStorage", isOn: $settings.clearSessionStorageBetweenAttempts)
+                Toggle("Fresh WebView Per Attempt", isOn: $settings.freshWebViewPerAttempt)
+            }
+
+            Section("Viewport") {
+                Stepper("Width: \(settings.viewportWidth)px", value: $settings.viewportWidth, in: 320...1920, step: 10)
+                Stepper("Height: \(settings.viewportHeight)px", value: $settings.viewportHeight, in: 480...1080, step: 10)
+                Toggle("Randomize Viewport", isOn: $settings.randomizeViewportSize)
+                Toggle("Mobile Emulation", isOn: $settings.mobileViewportEmulation)
+            }
+        }
+        .navigationTitle("Full Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 }

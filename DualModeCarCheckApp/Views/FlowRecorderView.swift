@@ -4,6 +4,8 @@ import WebKit
 struct FlowRecorderView: View {
     @State private var vm = FlowRecorderViewModel()
     @State private var showURLInput: Bool = true
+    @State private var showSettingsSheet: Bool = false
+    @State private var automationSettings: AutomationSettings = AutomationSettings()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +36,11 @@ struct FlowRecorderView: View {
                     } label: {
                         Label(showURLInput ? "Hide URL Bar" : "Show URL Bar", systemImage: "link")
                     }
+                    Button {
+                        showSettingsSheet = true
+                    } label: {
+                        Label("Automation Settings", systemImage: "gearshape.2.fill")
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 16, weight: .semibold))
@@ -45,6 +52,14 @@ struct FlowRecorderView: View {
         }
         .sheet(isPresented: $vm.showPlaybackSheet) {
             playbackConfigSheet
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                RecorderSettingsView(settings: $automationSettings)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
         }
         .navigationDestination(for: String.self) { destination in
             if destination == "savedFlows" {
@@ -86,6 +101,16 @@ struct FlowRecorderView: View {
                 }
             }
 
+            if vm.isTestingAction {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                    Text("TESTING")
+                        .font(.system(size: 9, weight: .black, design: .monospaced))
+                        .foregroundStyle(.purple)
+                }
+            }
+
             HStack(spacing: 4) {
                 Image(systemName: "fingerprint")
                     .font(.system(size: 10, weight: .semibold))
@@ -104,32 +129,49 @@ struct FlowRecorderView: View {
     }
 
     private var urlInputBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "globe")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
 
-            TextField("Enter URL", text: $vm.targetURL)
-                .font(.system(size: 13, design: .monospaced))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .submitLabel(.go)
+                TextField("Enter URL", text: $vm.targetURL)
+                    .font(.system(size: 13, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .submitLabel(.go)
 
-            if !vm.targetURL.isEmpty {
-                Button {
-                    vm.targetURL = ""
+                if !vm.targetURL.isEmpty {
+                    Button {
+                        vm.targetURL = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Menu {
+                    ForEach(vm.allAvailableURLs, id: \.self) { url in
+                        Button {
+                            vm.targetURL = url
+                        } label: {
+                            Text(url)
+                                .lineLimit(1)
+                        }
+                    }
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.blue)
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(.rect(cornerRadius: 8))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.tertiarySystemBackground))
-        .clipShape(.rect(cornerRadius: 8))
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
@@ -225,7 +267,7 @@ struct FlowRecorderView: View {
                             Button {
                                 vm.selectFlowForPlayback(flow)
                             } label: {
-                                Label(flow.name, systemImage: "play.fill")
+                                Label("\(flow.name) (\(flow.actionCount))", systemImage: "play.fill")
                             }
                         }
                     } label: {
@@ -255,6 +297,13 @@ struct FlowRecorderView: View {
                 Text(vm.statusMessage)
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let error = vm.lastError {
+                Text(error)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.red)
                     .lineLimit(1)
             }
 
@@ -315,13 +364,29 @@ struct FlowRecorderView: View {
                     }
                 }
 
+                if vm.isRecordingAfterPlay, let flow = vm.selectedFlow {
+                    Section {
+                        Button {
+                            vm.mergeRecordedActionsIntoFlow(flow, fromStep: vm.playFromStepIndex)
+                            vm.showSaveSheet = false
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.triangle.merge")
+                                Text("Merge into '\(flow.name)' from step \(vm.playFromStepIndex)")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .fontWeight(.semibold)
+                        }
+                    }
+                }
+
                 Section {
                     Button {
                         vm.saveCurrentFlow()
                     } label: {
                         HStack {
                             Image(systemName: "square.and.arrow.down.fill")
-                            Text("Save Flow")
+                            Text("Save as New Flow")
                         }
                         .frame(maxWidth: .infinity)
                         .fontWeight(.semibold)
@@ -348,7 +413,36 @@ struct FlowRecorderView: View {
                     Section("Flow: \(flow.name)") {
                         LabeledContent("Actions", value: "\(flow.actionCount)")
                         LabeledContent("Duration", value: flow.formattedDuration)
-                        LabeledContent("URL", value: flow.url)
+                        LabeledContent("URL") {
+                            Text(flow.url)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Section("Playback Options") {
+                        Stepper("Start from step: \(vm.playFromStepIndex)", value: $vm.playFromStepIndex, in: 0...max(0, flow.actions.count - 1))
+
+                        Toggle("Record after playback", isOn: $vm.recordAfterPlayback)
+                            .tint(.red)
+
+                        if vm.playFromStepIndex > 0 {
+                            let actionAtStep = flow.actions[min(vm.playFromStepIndex, flow.actions.count - 1)]
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.right.circle.fill")
+                                    .foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Step \(vm.playFromStepIndex): \(actionAtStep.type.rawValue)")
+                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                    if let pos = actionAtStep.mousePosition {
+                                        Text("(\(Int(pos.x)),\(Int(pos.y)))")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if !flow.textboxMappings.isEmpty {
@@ -400,5 +494,78 @@ struct FlowRecorderView: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationContentInteraction(.scrolls)
+    }
+}
+
+struct RecorderSettingsView: View {
+    @Binding var settings: AutomationSettings
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            Section("Page Loading") {
+                Stepper("Load Timeout: \(Int(settings.pageLoadTimeout))s", value: $settings.pageLoadTimeout, in: 5...120)
+                Stepper("Retries: \(settings.pageLoadRetries)", value: $settings.pageLoadRetries, in: 0...10)
+                Stepper("JS Render Wait: \(settings.waitForJSRenderMs)ms", value: $settings.waitForJSRenderMs, in: 500...15000, step: 500)
+            }
+
+            Section("Typing Simulation") {
+                Stepper("Min Speed: \(settings.typingSpeedMinMs)ms", value: $settings.typingSpeedMinMs, in: 5...500, step: 5)
+                Stepper("Max Speed: \(settings.typingSpeedMaxMs)ms", value: $settings.typingSpeedMaxMs, in: 20...1000, step: 10)
+                Toggle("Typing Jitter", isOn: $settings.typingJitterEnabled)
+                Toggle("Occasional Backspace", isOn: $settings.occasionalBackspaceEnabled)
+            }
+
+            Section("Login Button") {
+                Picker("Detection Mode", selection: $settings.loginButtonDetectionMode) {
+                    ForEach(AutomationSettings.ButtonDetectionMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                Picker("Click Method", selection: $settings.loginButtonClickMethod) {
+                    ForEach(AutomationSettings.ButtonClickMethod.allCases, id: \.self) { method in
+                        Text(method.rawValue).tag(method)
+                    }
+                }
+                Stepper("Pre-Click Delay: \(settings.loginButtonPreClickDelayMs)ms", value: $settings.loginButtonPreClickDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Click Delay: \(settings.loginButtonPostClickDelayMs)ms", value: $settings.loginButtonPostClickDelayMs, in: 0...5000, step: 50)
+                Toggle("Hover Before Click", isOn: $settings.loginButtonHoverBeforeClick)
+                Toggle("Focus Before Click", isOn: $settings.loginButtonFocusBeforeClick)
+                Toggle("OCR Fallback", isOn: $settings.loginButtonOCRFallback)
+                Toggle("Vision ML Fallback", isOn: $settings.loginButtonVisionMLFallback)
+                Toggle("Coordinate Fallback", isOn: $settings.loginButtonCoordinateFallback)
+            }
+
+            Section("Stealth") {
+                Toggle("Stealth JS", isOn: $settings.stealthJSInjection)
+                Toggle("Fingerprint Spoofing", isOn: $settings.fingerprintSpoofing)
+                Toggle("User Agent Rotation", isOn: $settings.userAgentRotation)
+                Toggle("Canvas Noise", isOn: $settings.canvasNoise)
+                Toggle("WebGL Noise", isOn: $settings.webGLNoise)
+            }
+
+            Section("Human Simulation") {
+                Toggle("Human Mouse Movement", isOn: $settings.humanMouseMovement)
+                Toggle("Human Scroll Jitter", isOn: $settings.humanScrollJitter)
+                Toggle("Random Pre-Action Pause", isOn: $settings.randomPreActionPause)
+                Toggle("Gaussian Timing", isOn: $settings.gaussianTimingDistribution)
+            }
+
+            Section("Time Delays") {
+                Stepper("Pre-Navigation: \(settings.preNavigationDelayMs)ms", value: $settings.preNavigationDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Navigation: \(settings.postNavigationDelayMs)ms", value: $settings.postNavigationDelayMs, in: 0...5000, step: 50)
+                Stepper("Pre-Submit: \(settings.preSubmitDelayMs)ms", value: $settings.preSubmitDelayMs, in: 0...5000, step: 50)
+                Stepper("Post-Submit: \(settings.postSubmitDelayMs)ms", value: $settings.postSubmitDelayMs, in: 0...5000, step: 50)
+                Stepper("Page Stabilization: \(settings.pageStabilizationDelayMs)ms", value: $settings.pageStabilizationDelayMs, in: 0...5000, step: 100)
+            }
+        }
+        .navigationTitle("Recorder Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 }

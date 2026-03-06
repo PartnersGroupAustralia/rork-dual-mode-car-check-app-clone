@@ -24,47 +24,46 @@ class FlowPlaybackEngine {
     func cancel() {
         cancelled = true
         isPlaying = false
-        logger.log("FlowPlayback: cancelled by user at action \(currentActionIndex)/\(totalActions)", category: .flowRecorder, level: .warning)
     }
 
     func playFlow(
         _ flow: RecordedFlow,
         in webView: WKWebView,
         textboxValues: [String: String] = [:],
+        startFromStep: Int = 0,
         onProgress: @escaping (Int, Int) -> Void,
         onComplete: @escaping (Bool) -> Void
     ) async {
         guard !flow.actions.isEmpty else {
-            logger.log("FlowPlayback: aborted — flow '\(flow.name)' has 0 actions", category: .flowRecorder, level: .error)
             onComplete(false)
             return
         }
 
+        let effectiveStart = max(0, min(startFromStep, flow.actions.count))
+
         isPlaying = true
         cancelled = false
         totalActions = flow.actions.count
-        currentActionIndex = 0
+        currentActionIndex = effectiveStart
         lastPlaybackError = nil
         failedActionIndices = []
         healedActionCount = 0
 
         let sessionId = "playback_\(flow.id.prefix(8))"
-        logger.startSession(sessionId, category: .flowRecorder, message: "FlowPlayback: starting '\(flow.name)' — \(flow.actions.count) actions, \(flow.formattedDuration)")
-        logger.log("FlowPlayback: textbox mappings: \(textboxValues.keys.sorted().joined(separator: ", "))", category: .flowRecorder, level: .debug, sessionId: sessionId)
+        logger.startSession(sessionId, category: .flowRecorder, message: "FlowPlayback: starting '\(flow.name)' from step \(effectiveStart) — \(flow.actions.count) actions")
 
         let profile = PPSRStealthService.shared.nextProfile()
         let stealthJS = PPSRStealthService.shared.buildComprehensiveStealthJSPublic(profile: profile)
         do {
             _ = try await webView.evaluateJavaScript(stealthJS)
-            logger.log("FlowPlayback: stealth JS injected (seed: \(profile.seed))", category: .stealth, level: .debug, sessionId: sessionId)
         } catch {
             logger.logError("FlowPlayback: stealth JS injection failed", error: error, category: .stealth, sessionId: sessionId)
-            logger.logHealing(category: .stealth, originalError: error.localizedDescription, healingAction: "Continuing without stealth JS", succeeded: true, sessionId: sessionId)
         }
 
-        for (index, action) in flow.actions.enumerated() {
+        for index in effectiveStart..<flow.actions.count {
             if cancelled { break }
 
+            let action = flow.actions[index]
             currentActionIndex = index
             onProgress(index, flow.actions.count)
 
@@ -80,11 +79,6 @@ class FlowPlaybackEngine {
             let success = await executeActionWithHealing(action, index: index, in: webView, textboxValues: textboxValues, sessionId: sessionId)
             if !success {
                 failedActionIndices.append(index)
-                logger.log("FlowPlayback: action #\(index) (\(action.type.rawValue)) failed — continuing", category: .flowRecorder, level: .warning, sessionId: sessionId, metadata: [
-                    "actionType": action.type.rawValue,
-                    "selector": action.targetSelector ?? "N/A",
-                    "position": action.mousePosition.map { "\($0.x),\($0.y)" } ?? "N/A"
-                ])
             }
         }
 
@@ -93,26 +87,473 @@ class FlowPlaybackEngine {
         isPlaying = false
 
         let success = !cancelled
-        let failRate = failedActionIndices.count
-        logger.endSession(sessionId, category: .flowRecorder, message: "FlowPlayback: \(success ? "completed" : "cancelled") — \(currentActionIndex)/\(totalActions) actions, \(failRate) failed, \(healedActionCount) healed", level: success ? (failRate == 0 ? .success : .warning) : .warning)
+        logger.endSession(sessionId, category: .flowRecorder, message: "FlowPlayback: \(success ? "completed" : "cancelled") — \(failedActionIndices.count) failed, \(healedActionCount) healed", level: success ? (failedActionIndices.isEmpty ? .success : .warning) : .warning)
         onComplete(success)
     }
 
-    private func executeActionWithHealing(_ action: RecordedAction, index: Int, in webView: WKWebView, textboxValues: [String: String], sessionId: String) async -> Bool {
-        let startTime = Date()
+    func testActionWithMethod(_ action: RecordedAction, method: ActionAutomationMethod, in webView: WKWebView, textboxValues: [String: String]) async -> Bool {
+        switch method {
+        case .humanClick:
+            return await executeHumanTouchChainClick(action, in: webView)
+        case .jsClick:
+            return await executeJSClick(action, in: webView)
+        case .pointerDispatch:
+            return await executePointerDispatch(action, in: webView)
+        case .formSubmit:
+            return await executeFormSubmit(action, in: webView)
+        case .enterKey:
+            return await executeEnterKey(in: webView)
+        case .ocrTextDetect:
+            return await executeOCRClick(action, in: webView)
+        case .coordinateClick:
+            return await executeCoordinateClick(action, in: webView)
+        case .visionMLDetect:
+            return await executeVisionMLClick(action, in: webView)
+        case .screenshotCropNav:
+            return await executeScreenshotCropClick(action, in: webView)
+        case .focusThenClick:
+            return await executeFocusThenClick(action, in: webView)
+        case .tabNavigation:
+            return await executeTabNavigation(action, in: webView)
+        case .nativeSetterFill:
+            if let label = action.textboxLabel {
+                let value = textboxValues[label] ?? action.textContent ?? ""
+                return await executeNativeSetterFill(selector: action.targetSelector ?? "", value: value, in: webView)
+            }
+            return false
+        case .execCommandInsert:
+            if let label = action.textboxLabel {
+                let value = textboxValues[label] ?? action.textContent ?? ""
+                return await executeExecCommandInsert(value: value, in: webView)
+            }
+            return false
+        case .mouseHoverThenClick:
+            return await executeHoverThenClick(action, in: webView)
+        }
+    }
 
+    // MARK: - Individual Method Implementations
+
+    private func executeHumanTouchChainClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            try {
+                el.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new PointerEvent('pointerenter',{bubbles:false,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch',button:0,buttons:1}));
+                el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0,buttons:1}));
+                el.focus();
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch',button:0}));
+                el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0}));
+                if (typeof el.click === 'function') el.click();
+                if (el.tagName === 'BUTTON' || el.type === 'submit') {
+                    var form = el.closest('form');
+                    if (form) { try { form.requestSubmit(); } catch(e) { form.submit(); } }
+                }
+                if (el.tagName === 'A' && el.href) { window.location.href = el.href; }
+                return 'OK';
+            } catch(e) { return 'ERROR:' + e.message; }
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeJSClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            try { el.click(); return 'OK'; } catch(e) { return 'ERROR:' + e.message; }
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executePointerDispatch(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            try {
+                var touch = new Touch({identifier:Date.now(),target:el,clientX:\(pos.x),clientY:\(pos.y),pageX:\(pos.viewportX),pageY:\(pos.viewportY)});
+                el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,touches:[touch],targetTouches:[touch],changedTouches:[touch]}));
+                el.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[touch]}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y)}));
+                return 'OK';
+            } catch(e) {
+                el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'touch'}));
+                el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y)}));
+                return 'FALLBACK';
+            }
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK" || result == "FALLBACK"
+    }
+
+    private func executeFormSubmit(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        let js = """
+        (function(){
+            var forms = document.querySelectorAll('form');
+            if (forms.length === 0) return 'NO_FORM';
+            var form = forms[0];
+            try {
+                if (form.requestSubmit) { form.requestSubmit(); }
+                else { form.submit(); }
+                return 'OK';
+            } catch(e) { return 'ERROR:' + e.message; }
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeEnterKey(in webView: WKWebView) async -> Bool {
+        let js = """
+        (function(){
+            var el = document.activeElement || document.body;
+            el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+            el.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+            el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            var form = el.closest ? el.closest('form') : null;
+            if (form) { try { form.requestSubmit(); } catch(e) { form.submit(); } }
+            return 'OK';
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeOCRClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let screenshot = await captureWebViewScreenshot(webView) else { return false }
+        let viewportSize = webView.frame.size.width > 0 ? webView.frame.size : CGSize(width: 390, height: 844)
+
+        let searchTerms = [
+            action.textboxLabel,
+            action.textContent,
+            action.targetTagName
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
+        for term in searchTerms {
+            let hit = await visionML.findTextOnScreen(term, in: screenshot, viewportSize: viewportSize)
+            if let hit {
+                let js = buildVisionClickJS(x: hit.pixelCoordinate.x, y: hit.pixelCoordinate.y)
+                let result = await safeEvalJS(js, in: webView)
+                if result?.hasPrefix("CLICKED") == true { return true }
+            }
+        }
+
+        let buttonTexts = ["Log in", "Login", "Sign in", "Submit", "Continue", "Next", "Enter", "Go"]
+        for text in buttonTexts {
+            let hit = await visionML.findTextOnScreen(text, in: screenshot, viewportSize: viewportSize)
+            if let hit {
+                let js = buildVisionClickJS(x: hit.pixelCoordinate.x, y: hit.pixelCoordinate.y)
+                let result = await safeEvalJS(js, in: webView)
+                if result?.hasPrefix("CLICKED") == true { return true }
+            }
+        }
+
+        return false
+    }
+
+    private func executeCoordinateClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            el.focus();
+            el.click();
+            return 'OK';
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeVisionMLClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let screenshot = await captureWebViewScreenshot(webView) else { return false }
+        let viewportSize = webView.frame.size.width > 0 ? webView.frame.size : CGSize(width: 390, height: 844)
+        let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
+
+        if action.type == .click || action.type == .mouseDown {
+            if let btn = detection.loginButton {
+                let js = buildVisionClickJS(x: btn.pixelCoordinate.x, y: btn.pixelCoordinate.y)
+                let result = await safeEvalJS(js, in: webView)
+                return result?.hasPrefix("CLICKED") == true
+            }
+        }
+
+        if let label = action.textboxLabel?.lowercased() {
+            if label.contains("email") || label.contains("user") {
+                if let field = detection.emailField {
+                    let js = buildVisionClickJS(x: field.pixelCoordinate.x, y: field.pixelCoordinate.y)
+                    _ = await safeEvalJS(js, in: webView)
+                    return true
+                }
+            }
+            if label.contains("pass") {
+                if let field = detection.passwordField {
+                    let js = buildVisionClickJS(x: field.pixelCoordinate.x, y: field.pixelCoordinate.y)
+                    _ = await safeEvalJS(js, in: webView)
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func executeScreenshotCropClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        guard let screenshot = await captureWebViewScreenshot(webView) else { return false }
+
+        let cropSize: CGFloat = 60
+        let rect = CGRect(
+            x: max(0, pos.x - cropSize / 2),
+            y: max(0, pos.y - cropSize / 2),
+            width: cropSize,
+            height: cropSize
+        )
+
+        guard let cgImage = screenshot.cgImage,
+              let cropped = cgImage.cropping(to: rect) else { return false }
+
+        let viewportSize = webView.frame.size.width > 0 ? webView.frame.size : CGSize(width: 390, height: 844)
+        let croppedImage = UIImage(cgImage: cropped)
+
+        let allText = await visionML.recognizeAllText(in: croppedImage)
+        if !allText.isEmpty {
+            let bestText = allText.first?.text ?? ""
+            let hit = await visionML.findTextOnScreen(bestText, in: screenshot, viewportSize: viewportSize)
+            if let hit {
+                let js = buildVisionClickJS(x: hit.pixelCoordinate.x, y: hit.pixelCoordinate.y)
+                let result = await safeEvalJS(js, in: webView)
+                return result?.hasPrefix("CLICKED") == true
+            }
+        }
+
+        let js = buildVisionClickJS(x: pos.x, y: pos.y)
+        let result = await safeEvalJS(js, in: webView)
+        return result?.hasPrefix("CLICKED") == true
+    }
+
+    private func executeFocusThenClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            el.focus();
+            el.dispatchEvent(new Event('focus',{bubbles:true}));
+            el.dispatchEvent(new Event('focusin',{bubbles:true}));
+            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y)}));
+            if (typeof el.click === 'function') el.click();
+            return 'OK';
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeTabNavigation(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        let js = """
+        (function(){
+            var el = document.activeElement || document.body;
+            for (var i = 0; i < 20; i++) {
+                el.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',code:'Tab',keyCode:9,which:9,bubbles:true}));
+                el.dispatchEvent(new KeyboardEvent('keyup',{key:'Tab',code:'Tab',keyCode:9,which:9,bubbles:true}));
+                el = document.activeElement;
+                if (el && (el.tagName === 'BUTTON' || el.type === 'submit')) {
+                    el.click();
+                    return 'CLICKED_AFTER_' + i + '_TABS';
+                }
+            }
+            return 'NO_BUTTON_FOUND';
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result?.hasPrefix("CLICKED") == true
+    }
+
+    private func executeNativeSetterFill(selector: String, value: String, in webView: WKWebView) async -> Bool {
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let selEscaped = selector.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = """
+        (function(){
+            var el = document.querySelector('\(selEscaped)') || document.activeElement;
+            if (!el || el === document.body) return 'NO_ELEMENT';
+            el.focus();
+            el.value = '';
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
+            el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'\(escaped)'}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            return el.value.length > 0 ? 'OK' : 'EMPTY';
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeExecCommandInsert(value: String, in webView: WKWebView) async -> Bool {
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = """
+        (function(){
+            var el = document.activeElement;
+            if (!el || el === document.body) return 'NO_ELEMENT';
+            el.focus();
+            el.value = '';
+            try { document.execCommand('insertText', false, '\(escaped)'); return el.value.length > 0 ? 'OK' : 'EMPTY'; }
+            catch(e) { return 'ERROR:' + e.message; }
+        })()
+        """
+        let result = await safeEvalJS(js, in: webView)
+        return result == "OK"
+    }
+
+    private func executeHoverThenClick(_ action: RecordedAction, in webView: WKWebView) async -> Bool {
+        guard let pos = action.mousePosition else { return false }
+        let js = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:false,clientX:\(pos.x),clientY:\(pos.y)}));
+            el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:\(pos.x),clientY:\(pos.y)}));
+            el.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:\(pos.x),clientY:\(pos.y)}));
+            return 'HOVERED';
+        })()
+        """
+        _ = await safeEvalJS(js, in: webView)
+        try? await Task.sleep(for: .milliseconds(200))
+
+        let clickJS = """
+        (function(){
+            var el = document.elementFromPoint(\(pos.x), \(pos.y));
+            if (!el) return 'NO_ELEMENT';
+            el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0,buttons:1}));
+            el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0}));
+            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:0}));
+            if (typeof el.click === 'function') el.click();
+            return 'OK';
+        })()
+        """
+        let result = await safeEvalJS(clickJS, in: webView)
+        return result == "OK"
+    }
+
+    // MARK: - Flow Optimization
+
+    func optimizeFlow(_ flow: RecordedFlow, settings: FlowOptimizationSettings) -> RecordedFlow {
+        var optimized = flow
+
+        if settings.stripRedundantMouseMoves {
+            var kept: [RecordedAction] = []
+            var consecutiveMoves = 0
+            for action in optimized.actions {
+                if action.type == .mouseMove {
+                    consecutiveMoves += 1
+                    if consecutiveMoves % max(1, settings.mouseMoveSampleRate) == 0 {
+                        kept.append(action)
+                    }
+                } else {
+                    consecutiveMoves = 0
+                    kept.append(action)
+                }
+            }
+            optimized.actions = kept
+        }
+
+        if settings.capMaxDelay > 0 {
+            for i in 0..<optimized.actions.count {
+                if optimized.actions[i].deltaFromPreviousMs > settings.capMaxDelay {
+                    optimized.actions[i] = rebuildAction(optimized.actions[i], delta: settings.capMaxDelay)
+                }
+            }
+        }
+
+        if settings.enforceMinDelay > 0 {
+            for i in 0..<optimized.actions.count {
+                if optimized.actions[i].deltaFromPreviousMs > 0 && optimized.actions[i].deltaFromPreviousMs < settings.enforceMinDelay {
+                    optimized.actions[i] = rebuildAction(optimized.actions[i], delta: settings.enforceMinDelay)
+                }
+            }
+        }
+
+        if settings.addTimingVariance {
+            let variance = settings.variancePercent / 100.0
+            for i in 0..<optimized.actions.count {
+                let base = optimized.actions[i].deltaFromPreviousMs
+                if base > 0 {
+                    let jitter = base * Double.random(in: -variance...variance)
+                    optimized.actions[i] = rebuildAction(optimized.actions[i], delta: max(1, base + jitter))
+                }
+            }
+        }
+
+        if settings.applyTimeScale != 1.0 {
+            for i in 0..<optimized.actions.count {
+                let scaled = optimized.actions[i].deltaFromPreviousMs * settings.applyTimeScale
+                optimized.actions[i] = rebuildAction(optimized.actions[i], delta: max(1, scaled))
+            }
+        }
+
+        if settings.addHumanPauses {
+            var withPauses: [RecordedAction] = []
+            for (i, action) in optimized.actions.enumerated() {
+                if i > 0 && (action.type == .click || action.type == .input || action.type == .textboxEntry) {
+                    let pauseMs = Double.random(in: settings.humanPauseMinMs...settings.humanPauseMaxMs)
+                    let pauseAction = RecordedAction(
+                        type: .pause,
+                        timestampMs: action.timestampMs - pauseMs,
+                        deltaFromPreviousMs: pauseMs
+                    )
+                    withPauses.append(pauseAction)
+                }
+                withPauses.append(action)
+            }
+            optimized.actions = withPauses
+        }
+
+        if settings.gaussianDistribution {
+            for i in 0..<optimized.actions.count {
+                let base = optimized.actions[i].deltaFromPreviousMs
+                if base > 10 {
+                    let u1 = Double.random(in: 0.0001...1.0)
+                    let u2 = Double.random(in: 0.0001...1.0)
+                    let gaussian = sqrt(-2.0 * log(u1)) * cos(2.0 * .pi * u2)
+                    let stddev = base * 0.15
+                    let adjusted = max(1, base + gaussian * stddev)
+                    optimized.actions[i] = rebuildAction(optimized.actions[i], delta: adjusted)
+                }
+            }
+        }
+
+        optimized.actionCount = optimized.actions.count
+        optimized.totalDurationMs = optimized.actions.reduce(0) { $0 + $1.deltaFromPreviousMs }
+        return optimized
+    }
+
+    // MARK: - Execute with Healing
+
+    private func executeActionWithHealing(_ action: RecordedAction, index: Int, in webView: WKWebView, textboxValues: [String: String], sessionId: String) async -> Bool {
         let result = await executeAction(action, in: webView, textboxValues: textboxValues, sessionId: sessionId)
         if result { return true }
 
-        let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
-
         if action.type == .click || action.type == .mouseDown || action.type == .mouseUp {
             if let pos = action.mousePosition {
-                logger.log("FlowPlayback: healing click at (\(pos.x),\(pos.y)) — trying alternative dispatch", category: .healing, level: .debug, sessionId: sessionId)
                 let healResult = await healClickAction(pos: pos, in: webView)
                 if healResult {
                     healedActionCount += 1
-                    logger.logHealing(category: .flowRecorder, originalError: "Click dispatch failed at (\(pos.x),\(pos.y))", healingAction: "Alternative click dispatch with focus+click+submit fallback", succeeded: true, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
                     return true
                 }
             }
@@ -121,11 +562,9 @@ class FlowPlaybackEngine {
         if action.type == .input || action.type == .textboxEntry {
             if let sel = action.targetSelector, let label = action.textboxLabel {
                 let value = textboxValues[label] ?? action.textContent ?? ""
-                logger.log("FlowPlayback: healing input for '\(label)' — trying fallback selectors", category: .healing, level: .debug, sessionId: sessionId)
                 let healResult = await healInputAction(selector: sel, value: value, in: webView)
                 if healResult {
                     healedActionCount += 1
-                    logger.logHealing(category: .flowRecorder, originalError: "Input fill failed for selector '\(sel)'", healingAction: "Fallback input fill with activeElement and nativeSetter", succeeded: true, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
                     return true
                 }
             }
@@ -136,7 +575,6 @@ class FlowPlaybackEngine {
                 let healResult = await healFocusAction(selector: sel, in: webView)
                 if healResult {
                     healedActionCount += 1
-                    logger.logHealing(category: .flowRecorder, originalError: "Focus failed for '\(sel)'", healingAction: "Tab-based focus fallback", succeeded: true, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
                     return true
                 }
             }
@@ -145,24 +583,20 @@ class FlowPlaybackEngine {
         let visionHealed = await healWithVision(action, index: index, in: webView, textboxValues: textboxValues, sessionId: sessionId)
         if visionHealed {
             healedActionCount += 1
-            logger.logHealing(category: .flowRecorder, originalError: "Action #\(index) (\(action.type.rawValue)) failed", healingAction: "Vision ML OCR fallback", succeeded: true, attemptNumber: 2, durationMs: elapsed, sessionId: sessionId)
             return true
         }
 
-        logger.logHealing(category: .flowRecorder, originalError: "Action #\(index) (\(action.type.rawValue)) failed", healingAction: "All healing strategies exhausted (including Vision ML)", succeeded: false, attemptNumber: 1, durationMs: elapsed, sessionId: sessionId)
         return false
     }
 
     private func healWithVision(_ action: RecordedAction, index: Int, in webView: WKWebView, textboxValues: [String: String], sessionId: String) async -> Bool {
         guard let screenshot = await captureWebViewScreenshot(webView) else { return false }
-
         let viewportSize = webView.frame.size.width > 0 ? webView.frame.size : CGSize(width: 390, height: 844)
 
         if action.type == .click || action.type == .mouseDown || action.type == .mouseUp {
             if let label = action.textboxLabel ?? action.targetTagName {
                 let hit = await visionML.findTextOnScreen(label, in: screenshot, viewportSize: viewportSize)
                 if let hit {
-                    logger.log("FlowPlayback: Vision healed click — found '\(label)' at (\(Int(hit.pixelCoordinate.x)),\(Int(hit.pixelCoordinate.y)))", category: .healing, level: .debug, sessionId: sessionId)
                     let js = buildVisionClickJS(x: hit.pixelCoordinate.x, y: hit.pixelCoordinate.y)
                     let result = await safeEvalJS(js, in: webView)
                     return result?.hasPrefix("CLICKED") == true || result == "HEALED"
@@ -171,7 +605,6 @@ class FlowPlaybackEngine {
 
             let detection = await visionML.detectLoginElements(in: screenshot, viewportSize: viewportSize)
             if let btnHit = detection.loginButton {
-                logger.log("FlowPlayback: Vision healed click — found login button '\(btnHit.label)' at (\(Int(btnHit.pixelCoordinate.x)),\(Int(btnHit.pixelCoordinate.y)))", category: .healing, level: .debug, sessionId: sessionId)
                 let js = buildVisionClickJS(x: btnHit.pixelCoordinate.x, y: btnHit.pixelCoordinate.y)
                 let result = await safeEvalJS(js, in: webView)
                 return result?.hasPrefix("CLICKED") == true || result == "HEALED"
@@ -211,7 +644,6 @@ class FlowPlaybackEngine {
                         })()
                         """
                         let result = await safeEvalJS(typeJS, in: webView)
-                        logger.log("FlowPlayback: Vision healed input for '\(label)' — \(result ?? "nil")", category: .healing, level: .debug, sessionId: sessionId)
                         return result == "TYPED"
                     }
                     return true
@@ -252,7 +684,6 @@ class FlowPlaybackEngine {
         do {
             return try await webView.takeSnapshot(configuration: config)
         } catch {
-            logger.logError("FlowPlayback: screenshot capture failed", error: error, category: .webView)
             return nil
         }
     }
@@ -347,8 +778,7 @@ class FlowPlaybackEngine {
                 if (el) {
                     el.dispatchEvent(new MouseEvent('mousemove', {
                         bubbles: true, cancelable: true,
-                        clientX: \(pos.x), clientY: \(pos.y),
-                        screenX: \(pos.x), screenY: \(pos.y)
+                        clientX: \(pos.x), clientY: \(pos.y)
                     }));
                     return 'OK';
                 }
@@ -415,11 +845,11 @@ class FlowPlaybackEngine {
             (function(){
                 var el = document.elementFromPoint(\(pos.x), \(pos.y));
                 if (el) {
-                    el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'mouse',button:\(btn),buttons:1}));
-                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn),buttons:1}));
-                    el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'mouse',button:\(btn)}));
-                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn)}));
-                    el.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn)}));
+                    el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'mouse',button:\(btn),buttons:1}));
+                    el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn),buttons:1}));
+                    el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),pointerId:1,pointerType:'mouse',button:\(btn)}));
+                    el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn)}));
+                    el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:\(pos.x),clientY:\(pos.y),button:\(btn)}));
                     if (typeof el.click === 'function') el.click();
                     return 'OK';
                 }
@@ -629,10 +1059,7 @@ class FlowPlaybackEngine {
         })()
         """
         let focusResult = await safeEvalJS(focusJS, in: webView)
-        if focusResult == "NOT_FOUND" {
-            logger.log("FlowPlayback: typeHumanLike — selector '\(selector)' not found", category: .flowRecorder, level: .warning, sessionId: sessionId)
-            return false
-        }
+        if focusResult == "NOT_FOUND" { return false }
 
         for char in text {
             let charStr = String(char).replacingOccurrences(of: "'", with: "\\'").replacingOccurrences(of: "\\", with: "\\\\")
@@ -651,7 +1078,6 @@ class FlowPlaybackEngine {
             })()
             """
             _ = await safeEvalJS(js, in: webView)
-
             let delay = Int.random(in: 35...180)
             try? await Task.sleep(for: .milliseconds(delay))
         }
@@ -665,9 +1091,6 @@ class FlowPlaybackEngine {
             if let num = result as? NSNumber { return "\(num)" }
             return nil
         } catch {
-            logger.logError("FlowPlayback: JS evaluation failed", error: error, category: .webView, metadata: [
-                "jsPrefix": String(js.prefix(80))
-            ])
             return nil
         }
     }
@@ -685,4 +1108,30 @@ class FlowPlaybackEngine {
         default: return Int(ascii)
         }
     }
+
+    private func rebuildAction(_ a: RecordedAction, delta: Double) -> RecordedAction {
+        RecordedAction(
+            id: a.id, type: a.type, timestampMs: a.timestampMs, deltaFromPreviousMs: delta,
+            mousePosition: a.mousePosition, scrollDeltaX: a.scrollDeltaX, scrollDeltaY: a.scrollDeltaY,
+            keyCode: a.keyCode, key: a.key, code: a.code, charCode: a.charCode,
+            targetSelector: a.targetSelector, targetTagName: a.targetTagName, targetType: a.targetType,
+            textboxLabel: a.textboxLabel, textContent: a.textContent,
+            button: a.button, buttons: a.buttons, holdDurationMs: a.holdDurationMs,
+            isTrusted: a.isTrusted, shiftKey: a.shiftKey, ctrlKey: a.ctrlKey, altKey: a.altKey, metaKey: a.metaKey
+        )
+    }
+}
+
+nonisolated struct FlowOptimizationSettings: Sendable {
+    var stripRedundantMouseMoves: Bool = true
+    var mouseMoveSampleRate: Int = 5
+    var capMaxDelay: Double = 3000
+    var enforceMinDelay: Double = 10
+    var addTimingVariance: Bool = true
+    var variancePercent: Double = 20
+    var applyTimeScale: Double = 1.0
+    var addHumanPauses: Bool = false
+    var humanPauseMinMs: Double = 50
+    var humanPauseMaxMs: Double = 300
+    var gaussianDistribution: Bool = true
 }

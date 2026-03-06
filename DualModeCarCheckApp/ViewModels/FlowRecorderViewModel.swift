@@ -27,6 +27,16 @@ class FlowRecorderViewModel {
     var failedActions: Int = 0
     var healedActions: Int = 0
 
+    var playFromStepIndex: Int = 0
+    var showURLDropdown: Bool = false
+    var showSettingsFromRecorder: Bool = false
+    var isTestingAction: Bool = false
+    var testingActionIndex: Int?
+    var testingActionMethod: ActionAutomationMethod = .humanClick
+    var testActionResults: [ActionTestResult] = []
+    var recordAfterPlayback: Bool = false
+    var isRecordingAfterPlay: Bool = false
+
     private let persistence = FlowPersistenceService.shared
     private let playbackEngine = FlowPlaybackEngine.shared
     private let logger = DebugLogger.shared
@@ -35,7 +45,6 @@ class FlowRecorderViewModel {
     weak var activeWebView: WKWebView?
 
     var currentActionCount: Int { currentActions.count }
-
     var mouseMovements: Int { currentActions.filter { $0.type == .mouseMove }.count }
     var clicks: Int { currentActions.filter { $0.type == .click || $0.type == .mouseDown }.count }
     var keystrokes: Int { currentActions.filter { $0.type == .keyDown }.count }
@@ -46,21 +55,36 @@ class FlowRecorderViewModel {
         return labels.sorted()
     }
 
+    var allAvailableURLs: [String] {
+        var urls: [String] = []
+        let urlService = LoginURLRotationService.shared
+        for u in urlService.joeURLs where u.isEnabled {
+            urls.append(u.urlString)
+        }
+        for u in urlService.ignitionURLs where u.isEnabled {
+            urls.append(u.urlString)
+        }
+        let flowURLs = Set(savedFlows.map(\.url))
+        for fu in flowURLs {
+            if !urls.contains(fu) { urls.append(fu) }
+        }
+        if !targetURL.isEmpty && !urls.contains(targetURL) {
+            urls.insert(targetURL, at: 0)
+        }
+        return urls
+    }
+
     init() {
-        logger.log("FlowRecorderViewModel: initializing, loading saved flows", category: .flowRecorder, level: .debug)
         savedFlows = persistence.loadFlows()
-        logger.log("FlowRecorderViewModel: loaded \(savedFlows.count) saved flows", category: .flowRecorder, level: .info)
     }
 
     func startRecording() {
-        guard !isRecording else {
-            logger.log("FlowRecorder: startRecording called while already recording — ignored", category: .flowRecorder, level: .warning)
-            return
-        }
+        guard !isRecording else { return }
         currentActions = []
         recordingDurationMs = 0
         recordingStartTime = ProcessInfo.processInfo.systemUptime * 1000
         isRecording = true
+        isRecordingAfterPlay = false
         lastError = nil
         statusMessage = "Recording..."
 
@@ -74,26 +98,37 @@ class FlowRecorderViewModel {
         logger.startSession("recording", category: .flowRecorder, message: "FlowRecorder: recording started for \(targetURL)")
     }
 
-    func stopRecording() {
-        guard isRecording else {
-            logger.log("FlowRecorder: stopRecording called while not recording — ignored", category: .flowRecorder, level: .warning)
-            return
+    func startRecordingFromStep() {
+        guard !isRecording else { return }
+        recordingDurationMs = 0
+        recordingStartTime = ProcessInfo.processInfo.systemUptime * 1000
+        isRecording = true
+        isRecordingAfterPlay = true
+        lastError = nil
+        statusMessage = "Recording (continuing from step \(playFromStepIndex))..."
+
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                self.recordingDurationMs = ProcessInfo.processInfo.systemUptime * 1000 - self.recordingStartTime
+            }
         }
+
+        logger.startSession("recording_continue", category: .flowRecorder, message: "FlowRecorder: recording continued from step \(playFromStepIndex)")
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
         isRecording = false
         durationTimer?.invalidate()
         durationTimer = nil
         statusMessage = "Recording stopped — \(currentActions.count) actions captured"
 
-        logger.endSession("recording", category: .flowRecorder, message: "FlowRecorder: recording stopped — \(currentActions.count) actions, \(String(format: "%.1f", recordingDurationMs / 1000))s", level: currentActions.isEmpty ? .warning : .success)
+        logger.endSession("recording", category: .flowRecorder, message: "FlowRecorder: recording stopped — \(currentActions.count) actions", level: currentActions.isEmpty ? .warning : .success)
 
         if currentActions.isEmpty {
-            logger.log("FlowRecorder: recording produced 0 actions — possible JS injection failure", category: .flowRecorder, level: .error, metadata: [
-                "url": targetURL,
-                "duration": String(format: "%.1f", recordingDurationMs / 1000)
-            ])
             lastError = "No actions recorded. The page may be blocking the recorder script."
         } else {
-            logger.log("FlowRecorder: breakdown — mouse:\(mouseMovements) clicks:\(clicks) keys:\(keystrokes) scrolls:\(scrollEvents) textboxes:\(detectedTextboxes.count)", category: .flowRecorder, level: .info)
             showSaveSheet = true
         }
     }
@@ -101,24 +136,21 @@ class FlowRecorderViewModel {
     func appendActions(_ actions: [RecordedAction]) {
         guard !actions.isEmpty else { return }
         currentActions.append(contentsOf: actions)
-        logger.log("FlowRecorder: received \(actions.count) actions (total: \(currentActions.count))", category: .flowRecorder, level: .trace)
     }
 
     func handlePageLoaded(_ title: String) {
         pageTitle = title
-        logger.log("FlowRecorder: page loaded — \(title)", category: .webView, level: .info, metadata: ["url": targetURL])
         validateFingerprint()
     }
 
     func handlePageLoadFailed(_ error: String) {
         lastError = error
-        logger.log("FlowRecorder: page load FAILED — \(error)", category: .webView, level: .error, metadata: ["url": targetURL])
         statusMessage = "Page load failed: \(error)"
     }
 
     func saveCurrentFlow() {
         let name = flowName.isEmpty ? "Flow \(savedFlows.count + 1)" : flowName
-        let textboxMappings = detectedTextboxes.enumerated().map { index, label in
+        let textboxMappings = detectedTextboxes.map { label in
             let lastInput = currentActions.last(where: { $0.textboxLabel == label && $0.type == .input })
             let selector = lastInput?.targetSelector ?? ""
             let originalText = lastInput?.textContent ?? ""
@@ -144,36 +176,42 @@ class FlowRecorderViewModel {
         flowName = ""
         showSaveSheet = false
         statusMessage = "Flow '\(name)' saved — \(flow.actionCount) actions"
-        logger.log("FlowRecorder: saved flow '\(name)' — \(flow.actionCount) actions, \(textboxMappings.count) textbox mappings", category: .persistence, level: .success, metadata: [
-            "actionCount": "\(flow.actionCount)",
-            "textboxes": textboxMappings.map(\.label).joined(separator: ", "),
-            "url": targetURL
-        ])
+    }
+
+    func mergeRecordedActionsIntoFlow(_ flow: RecordedFlow, fromStep: Int) {
+        guard !currentActions.isEmpty else { return }
+        var updatedFlow = flow
+        let keepActions = Array(updatedFlow.actions.prefix(fromStep))
+        updatedFlow.actions = keepActions + currentActions
+        updatedFlow.actionCount = updatedFlow.actions.count
+        updatedFlow.totalDurationMs = updatedFlow.actions.reduce(0) { $0 + $1.deltaFromPreviousMs }
+
+        if let idx = savedFlows.firstIndex(where: { $0.id == flow.id }) {
+            savedFlows[idx] = updatedFlow
+        }
+        persistence.saveFlows(savedFlows)
+        statusMessage = "Flow '\(flow.name)' updated — merged \(currentActions.count) new actions from step \(fromStep)"
+        currentActions = []
     }
 
     func deleteFlow(_ flow: RecordedFlow) {
         savedFlows.removeAll { $0.id == flow.id }
         persistence.saveFlows(savedFlows)
-        logger.log("FlowRecorder: deleted flow '\(flow.name)'", category: .persistence, level: .info)
     }
 
     func selectFlowForPlayback(_ flow: RecordedFlow) {
         selectedFlow = flow
         textboxValues = [:]
+        playFromStepIndex = 0
         for mapping in flow.textboxMappings {
             textboxValues[mapping.placeholderKey] = ""
         }
         showPlaybackSheet = true
-        logger.log("FlowRecorder: selected flow '\(flow.name)' for playback — \(flow.textboxMappings.count) textbox fields to fill", category: .flowRecorder, level: .debug)
     }
 
     func playSelectedFlow() {
-        guard let flow = selectedFlow else {
-            logger.log("FlowRecorder: playSelectedFlow — no flow selected", category: .flowRecorder, level: .error)
-            return
-        }
+        guard let flow = selectedFlow else { return }
         guard let webView = activeWebView else {
-            logger.log("FlowRecorder: playSelectedFlow — no active webView", category: .flowRecorder, level: .error)
             lastError = "WebView not available for playback"
             return
         }
@@ -186,18 +224,14 @@ class FlowRecorderViewModel {
         failedActions = 0
         healedActions = 0
         lastError = nil
-        statusMessage = "Playing '\(flow.name)'..."
-
-        let emptyFields = textboxValues.filter { $0.value.isEmpty }
-        if !emptyFields.isEmpty {
-            logger.log("FlowRecorder: playback starting with \(emptyFields.count) empty textbox fields: \(emptyFields.keys.sorted().joined(separator: ", "))", category: .flowRecorder, level: .warning)
-        }
+        statusMessage = "Playing '\(flow.name)' from step \(playFromStepIndex)..."
 
         Task {
             await playbackEngine.playFlow(
                 flow,
                 in: webView,
                 textboxValues: textboxValues,
+                startFromStep: playFromStepIndex,
                 onProgress: { [weak self] current, total in
                     guard let self else { return }
                     self.playbackActionIndex = current
@@ -215,10 +249,13 @@ class FlowRecorderViewModel {
                         } else {
                             self.statusMessage = "Playback complete"
                         }
+                        if self.recordAfterPlayback {
+                            self.playFromStepIndex = flow.actions.count
+                            self.startRecordingFromStep()
+                        }
                     } else {
                         self.statusMessage = "Playback cancelled"
                     }
-                    self.logger.log("FlowRecorder: playback finished — failed:\(self.failedActions) healed:\(self.healedActions)", category: .flowRecorder, level: self.failedActions > 0 ? .warning : .success)
                 }
             )
         }
@@ -230,33 +267,73 @@ class FlowRecorderViewModel {
         statusMessage = "Playback cancelled"
     }
 
-    func validateFingerprint() {
+    func testSingleAction(_ action: RecordedAction, method: ActionAutomationMethod) {
         guard let webView = activeWebView else {
-            logger.log("FlowRecorder: validateFingerprint — no active webView", category: .fingerprint, level: .warning)
+            lastError = "WebView not available"
             return
         }
+        isTestingAction = true
+        statusMessage = "Testing action with \(method.rawValue)..."
+
+        Task {
+            let startTime = Date()
+            let success = await playbackEngine.testActionWithMethod(action, method: method, in: webView, textboxValues: textboxValues)
+            let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
+
+            let result = ActionTestResult(
+                actionId: action.id,
+                method: method,
+                success: success,
+                durationMs: elapsed
+            )
+            testActionResults.append(result)
+            isTestingAction = false
+            statusMessage = success ? "Action test PASSED (\(method.rawValue), \(elapsed)ms)" : "Action test FAILED (\(method.rawValue), \(elapsed)ms)"
+        }
+    }
+
+    func testAllMethodsForAction(_ action: RecordedAction) {
+        guard let webView = activeWebView else {
+            lastError = "WebView not available"
+            return
+        }
+        isTestingAction = true
+        statusMessage = "Testing all methods..."
+
+        Task {
+            for method in ActionAutomationMethod.allCases {
+                let startTime = Date()
+                let success = await playbackEngine.testActionWithMethod(action, method: method, in: webView, textboxValues: textboxValues)
+                let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
+
+                let result = ActionTestResult(
+                    actionId: action.id,
+                    method: method,
+                    success: success,
+                    durationMs: elapsed
+                )
+                testActionResults.append(result)
+
+                if success {
+                    statusMessage = "Found working method: \(method.rawValue) (\(elapsed)ms)"
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            isTestingAction = false
+        }
+    }
+
+    func validateFingerprint() {
+        guard let webView = activeWebView else { return }
         Task {
             let profile = PPSRStealthService.shared.nextProfile()
             let score = await FingerprintValidationService.shared.validate(in: webView, profileSeed: profile.seed)
             fingerprintScore = score.formattedScore
-            if !score.passed {
-                logger.log("FlowRecorder: fingerprint FAIL — \(score.formattedScore) signals: \(score.signals.joined(separator: ", "))", category: .fingerprint, level: .error, metadata: [
-                    "score": "\(score.totalScore)",
-                    "maxSafe": "\(score.maxSafeScore)",
-                    "signalCount": "\(score.signals.count)"
-                ])
-            } else {
-                logger.log("FlowRecorder: fingerprint PASS — \(score.formattedScore)", category: .fingerprint, level: .success)
-            }
         }
     }
 
     func exportFlow(_ flow: RecordedFlow) -> Data? {
-        let data = persistence.exportFlow(flow)
-        if data == nil {
-            logger.log("FlowRecorder: export failed for '\(flow.name)'", category: .persistence, level: .error)
-        }
-        return data
+        persistence.exportFlow(flow)
     }
 
     func importFlow(from data: Data) {
@@ -264,11 +341,9 @@ class FlowRecorderViewModel {
             savedFlows.insert(flow, at: 0)
             persistence.saveFlows(savedFlows)
             statusMessage = "Imported '\(flow.name)'"
-            logger.log("FlowRecorder: imported flow '\(flow.name)' — \(flow.actionCount) actions", category: .persistence, level: .success)
         } else {
             lastError = "Failed to import flow — invalid data format"
             statusMessage = "Import failed — invalid data"
-            logger.log("FlowRecorder: import failed — could not decode flow data (\(data.count) bytes)", category: .persistence, level: .error)
         }
     }
 
@@ -281,4 +356,29 @@ class FlowRecorderViewModel {
         let remaining = Int(seconds) % 60
         return "\(minutes)m \(remaining)s"
     }
+}
+
+nonisolated enum ActionAutomationMethod: String, Codable, Sendable, CaseIterable {
+    case humanClick = "Human Touch Chain"
+    case jsClick = "JS Click"
+    case pointerDispatch = "Pointer+Touch Dispatch"
+    case formSubmit = "Form Submit"
+    case enterKey = "Enter Key"
+    case ocrTextDetect = "OCR Text Detect"
+    case coordinateClick = "Coordinate Click"
+    case visionMLDetect = "Vision ML Detect"
+    case screenshotCropNav = "Screenshot Crop Nav"
+    case focusThenClick = "Focus Then Click"
+    case tabNavigation = "Tab Navigation"
+    case nativeSetterFill = "Native Setter Fill"
+    case execCommandInsert = "ExecCommand Insert"
+    case mouseHoverThenClick = "Mouse Hover+Click"
+}
+
+nonisolated struct ActionTestResult: Sendable, Identifiable {
+    let id: String = UUID().uuidString
+    let actionId: String
+    let method: ActionAutomationMethod
+    let success: Bool
+    let durationMs: Int
 }
