@@ -22,6 +22,7 @@ class LoginAutomationEngine {
     var automationSettings: AutomationSettings = AutomationSettings()
     private let logger = DebugLogger.shared
     private let visionML = VisionMLService.shared
+    private let debugButtonService = DebugLoginButtonService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
@@ -292,13 +293,24 @@ class LoginAutomationEngine {
             advanceTo(.submitting, attempt: attempt, message: "Cycle \(cycle)/\(maxSubmitCycles) — evaluating submit...")
 
             if !patternResult.submitTriggered {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying calibrated+legacy click strategies", level: .warning))
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): pattern submit failed — trying debug button → calibrated → legacy click strategies", level: .warning))
                 var legacySubmitOK = false
 
-                let calClickResult = await session.clickLoginButtonCalibrated(calibration: calibration)
-                if calClickResult.success {
-                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) calibrated click: \(calClickResult.detail)", level: .info))
+                let debugBtnResult = await debugButtonService.replaySuccessfulMethod(session: session, url: targetURLString)
+                if debugBtnResult.success {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) DEBUG BUTTON REPLAY: \(debugBtnResult.detail)", level: .success))
+                    logger.log("DebugLoginButton replay SUCCESS for \(targetURLString)", category: .automation, level: .success, sessionId: sessionId)
                     legacySubmitOK = true
+                } else if debugButtonService.hasSuccessfulMethod(for: targetURLString) {
+                    attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) debug button replay failed: \(debugBtnResult.detail)", level: .warning))
+                }
+
+                if !legacySubmitOK {
+                    let calClickResult = await session.clickLoginButtonCalibrated(calibration: calibration)
+                    if calClickResult.success {
+                        attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle) calibrated click: \(calClickResult.detail)", level: .info))
+                        legacySubmitOK = true
+                    }
                 }
 
                 if !legacySubmitOK {

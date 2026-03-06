@@ -2013,6 +2013,30 @@ struct LoginMoreMenuView: View {
                     }
                 }
 
+                Section("Login Button Debugger") {
+                    NavigationLink {
+                        DebugLoginButtonView(vm: vm)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "target")
+                                .font(.title3).foregroundStyle(.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Debug Login Button").font(.subheadline.bold())
+                                Text("\(DebugLoginButtonService.shared.configs.count) saved configs")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if DebugLoginButtonService.shared.configs.values.contains(where: { $0.userConfirmed }) {
+                                Text("ACTIVE")
+                                    .font(.system(.caption2, design: .monospaced, weight: .heavy))
+                                    .foregroundStyle(.green)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.green.opacity(0.12)).clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+
                 Section("Flow Recorder") {
                     NavigationLink {
                         FlowRecorderView()
@@ -2074,6 +2098,21 @@ struct LoginMoreMenuView: View {
                         CredentialExportView(vm: vm)
                     } label: {
                         moreRow(icon: "square.and.arrow.up.fill", title: "Export Credentials", subtitle: "Text or CSV by category", color: .blue)
+                    }
+                }
+
+                Section("Diagnostic Report") {
+                    Button {
+                        let text = DebugLogger.shared.exportDiagnosticReport(
+                            credentials: vm.credentials,
+                            automationSettings: vm.automationSettings
+                        )
+                        UIPasteboard.general.string = text
+                        vm.log("Copied diagnostic report to clipboard (\(text.count) chars)", level: .success)
+                        withAnimation(.spring(duration: 0.3)) { showCopiedToast = true }
+                        Task { try? await Task.sleep(for: .seconds(1.5)); withAnimation { showCopiedToast = false } }
+                    } label: {
+                        moreRow(icon: "stethoscope", title: "Export Diagnostic Report", subtitle: "Full report for Rork Max error analysis", color: .red)
                     }
                 }
 

@@ -13,8 +13,17 @@ struct AutomationSettingsView: View {
         vm.isIgnitionMode ? .orange : .green
     }
 
+    @State private var autoSaveEnabled: Bool = true
+    @State private var lastSaveTime: Date? = nil
+    @State private var showSavedToast: Bool = false
+
+    private var automationSettingsHash: String {
+        (try? String(data: JSONEncoder().encode(vm.automationSettings), encoding: .utf8)) ?? ""
+    }
+
     var body: some View {
         List {
+            autoSaveSection
             templateQuickSection
             pageLoadingSection
             fieldDetectionSection
@@ -44,6 +53,33 @@ struct AutomationSettingsView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Automation Config")
+        .onChange(of: automationSettingsHash) { _, _ in
+            if autoSaveEnabled {
+                vm.persistAutomationSettings()
+                lastSaveTime = Date()
+                withAnimation(.spring(duration: 0.3)) { showSavedToast = true }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.2))
+                    withAnimation { showSavedToast = false }
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showSavedToast {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("Auto-saved")
+                        .font(.subheadline.bold())
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.green.gradient, in: Capsule())
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(.bottom, 20)
+            }
+        }
         .sheet(isPresented: $showTemplates) {
             NavigationStack {
                 AutomationTemplateView(vm: vm)
@@ -146,6 +182,60 @@ struct AutomationSettingsView: View {
     }
 
     // MARK: - Template Quick
+
+    private var autoSaveSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: autoSaveEnabled ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath.circle")
+                    .font(.title3)
+                    .foregroundStyle(autoSaveEnabled ? .green : .secondary)
+                    .symbolEffect(.pulse, isActive: autoSaveEnabled)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Auto-Save")
+                        .font(.subheadline.weight(.bold))
+                    if let lastSave = lastSaveTime {
+                        Text("Last saved: \(lastSave, style: .relative) ago")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Saves all settings after every change")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Toggle("", isOn: $autoSaveEnabled)
+                    .labelsHidden()
+                    .tint(.green)
+            }
+
+            if !autoSaveEnabled {
+                Button {
+                    vm.persistAutomationSettings()
+                    vm.persistSettings()
+                    lastSaveTime = Date()
+                    withAnimation(.spring(duration: 0.3)) { showSavedToast = true }
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.2))
+                        withAnimation { showSavedToast = false }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.down.fill")
+                        Text("Save Now")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(.rect(cornerRadius: 10))
+                }
+            }
+        } header: {
+            Label("Persistence", systemImage: "externaldrive.fill")
+        }
+    }
 
     private var templateQuickSection: some View {
         Section {
