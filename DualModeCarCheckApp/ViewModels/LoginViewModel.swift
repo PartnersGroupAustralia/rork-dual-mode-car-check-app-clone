@@ -123,6 +123,10 @@ class LoginViewModel {
                 self?.debugScreenshots = Array(self!.debugScreenshots.prefix(500))
             }
         }
+        engine.onPurgeScreenshots = { [weak self] ids in
+            let idSet = Set(ids)
+            self?.debugScreenshots.removeAll { idSet.contains($0.id) }
+        }
         engine.onConnectionFailure = { [weak self] detail in
             self?.notifications.sendConnectionFailure(detail: detail)
         }
@@ -150,6 +154,10 @@ class LoginViewModel {
 
         secondaryEngine.onScreenshot = { [weak self] screenshot in
             self?.debugScreenshots.insert(screenshot, at: 0)
+        }
+        secondaryEngine.onPurgeScreenshots = { [weak self] ids in
+            let idSet = Set(ids)
+            self?.debugScreenshots.removeAll { idSet.contains($0.id) }
         }
         secondaryEngine.onLog = { [weak self] message, level in
             self?.log("[DUAL] \(message)", level: level)

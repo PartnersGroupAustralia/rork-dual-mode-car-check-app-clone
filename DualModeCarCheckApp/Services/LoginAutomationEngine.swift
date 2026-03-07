@@ -25,6 +25,7 @@ class LoginAutomationEngine {
     private let debugButtonService = DebugLoginButtonService.shared
     private let trueDetection = TrueDetectionService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
+    var onPurgeScreenshots: (([String]) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
     var onLog: ((String, PPSRLogEntry.Level) -> Void)?
@@ -398,10 +399,10 @@ class LoginAutomationEngine {
 
             if pollResult.errorBannerDetected {
                 attempt.logs.append(PPSRLogEntry(
-                    message: "RED BANNER ERROR detected: \(pollResult.errorBannerText ?? "error")",
+                    message: "RED BANNER ERROR detected: \(pollResult.errorBannerText ?? "error") — wiping session, requeuing to bottom",
                     level: .warning
                 ))
-                await captureAlwaysScreenshot(session: session, attempt: attempt, cycle: cycle, maxCycles: maxSubmitCycles, welcomeTextFound: false, redirected: false, evaluationReason: "Red banner error", currentURL: currentURL, autoResult: .unknown)
+                await captureTerminalScreenshot(session: session, attempt: attempt, step: "red_banner_error", note: "RED BANNER ERROR: \(pollResult.errorBannerText ?? "error") — requeued for future retry", autoResult: .unknown, terminalType: .errorBanner)
                 attempt.status = .failed
                 attempt.errorMessage = "Red banner error detected — requeuing to bottom"
                 attempt.completedAt = Date()
@@ -466,17 +467,16 @@ class LoginAutomationEngine {
                 return .success
 
             case .tempDisabled:
-                attempt.logs.append(PPSRLogEntry(message: "TEMP DISABLED after \(cycle) cycles: \(evaluation.reason)", level: .warning))
+                attempt.logs.append(PPSRLogEntry(message: "TEMP DISABLED on cycle \(cycle): \(evaluation.reason) — FINAL RESULT", level: .warning))
                 failAttempt(attempt, message: "Account temporarily disabled: \(evaluation.reason)")
+                await captureTerminalScreenshot(session: session, attempt: attempt, step: "temp_disabled", note: "TEMP DISABLED: \(evaluation.reason)", autoResult: .fail, terminalType: .temporarilyDisabled)
                 return .tempDisabled
 
             case .permDisabled:
-                if cycle >= maxSubmitCycles {
-                    attempt.logs.append(PPSRLogEntry(message: "PERM DISABLED after \(cycle) cycles: \(evaluation.reason)", level: .error))
-                    failAttempt(attempt, message: "Account permanently disabled/blacklisted: \(evaluation.reason)")
-                    return .permDisabled
-                }
-                finalOutcome = .permDisabled
+                attempt.logs.append(PPSRLogEntry(message: "PERM DISABLED on cycle \(cycle): \(evaluation.reason) — FINAL RESULT (immediate)", level: .error))
+                failAttempt(attempt, message: "Account permanently disabled/blacklisted: \(evaluation.reason)")
+                await captureTerminalScreenshot(session: session, attempt: attempt, step: "perm_disabled", note: "PERM DISABLED: \(evaluation.reason)", autoResult: .fail, terminalType: .accountDisabled)
+                return .permDisabled
 
             case .noAcc:
                 if cycle < maxSubmitCycles {
@@ -890,6 +890,117 @@ class LoginAutomationEngine {
             return (false, false, nil)
         }
         return await visionML.detectSuccessIndicators(in: screenshot)
+    }
+
+    private func captureTerminalScreenshot(session: LoginSiteWebSession, attempt: LoginAttempt, step: String, note: String, autoResult: PPSRDebugScreenshot.AutoDetectedResult, terminalType: TrueDetectionService.TerminalError) async {
+        let config = TrueDetectionService.TrueDetectionConfig()
+
+        let terminalImage: UIImage?
+        if terminalType == .errorBanner {
+            terminalImage = await trueDetection.captureErrorBannerCrop(session: session, config: config)
+        } else {
+            terminalImage = await captureTerminalMessageCrop(session: session, terminalType: terminalType)
+        }
+
+        let finalImage = terminalImage ?? await session.captureScreenshot()
+        guard let finalImage else { return }
+
+        let compressed: UIImage
+        if let jpegData = finalImage.jpegData(compressionQuality: 0.5), let ci = UIImage(data: jpegData) {
+            compressed = ci
+        } else {
+            compressed = finalImage
+        }
+
+        let previousIds = attempt.screenshotIds
+        if !previousIds.isEmpty {
+            onPurgeScreenshots?(previousIds)
+            attempt.screenshotIds.removeAll()
+        }
+
+        attempt.responseSnapshot = compressed
+
+        let screenshot = PPSRDebugScreenshot(
+            stepName: step,
+            cardDisplayNumber: attempt.credential.username,
+            cardId: attempt.credential.id,
+            vin: "",
+            email: attempt.credential.username,
+            image: compressed,
+            note: note,
+            autoDetectedResult: autoResult
+        )
+        attempt.screenshotIds = [screenshot.id]
+        onScreenshot?(screenshot)
+
+        logger.log("Terminal screenshot captured for \(step) — purged \(previousIds.count) previous screenshot(s)", category: .screenshot, level: .info)
+    }
+
+    private func captureTerminalMessageCrop(session: LoginSiteWebSession, terminalType: TrueDetectionService.TerminalError) async -> UIImage? {
+        guard let fullScreenshot = await session.captureScreenshot() else { return nil }
+        guard let webView = session.webView else { return fullScreenshot }
+
+        let keywords: [String]
+        switch terminalType {
+        case .temporarilyDisabled:
+            keywords = ["temporarily", "temporarily disabled", "temporarily locked", "temporarily suspended", "too many attempts", "try again later"]
+        case .accountDisabled:
+            keywords = ["account is disabled", "account has been disabled", "account has been suspended", "permanently banned", "account is closed", "self-excluded", "account has been blocked"]
+        case .errorBanner:
+            return fullScreenshot
+        }
+
+        let keywordsJS = "[" + keywords.map { "'\($0)'" }.joined(separator: ",") + "]"
+
+        let searchJS = """
+        (function() {
+            var keywords = \(keywordsJS);
+            var allElements = document.querySelectorAll('div, p, span, h1, h2, h3, h4, h5, h6, li, td, section, article, aside, label, strong, em, b');
+            for (var i = 0; i < allElements.length; i++) {
+                var el = allElements[i];
+                var text = (el.textContent || '').toLowerCase();
+                var visible = el.offsetParent !== null || el.offsetHeight > 0;
+                if (!visible) continue;
+                for (var k = 0; k < keywords.length; k++) {
+                    if (text.indexOf(keywords[k]) !== -1) {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width > 20 && rect.height > 10) {
+                            return JSON.stringify({x: rect.left, y: rect.top, w: rect.width, h: rect.height});
+                        }
+                    }
+                }
+            }
+            return null;
+        })();
+        """
+
+        if let result = await session.executeJS(searchJS),
+           let data = result.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+           let x = json["x"], let y = json["y"], let w = json["w"], let h = json["h"],
+           w > 20, h > 10 {
+
+            let viewSize = webView.bounds.size
+            guard let cgImage = fullScreenshot.cgImage else { return fullScreenshot }
+            let imageW = CGFloat(cgImage.width)
+            let imageH = CGFloat(cgImage.height)
+            let scaleX = imageW / viewSize.width
+            let scaleY = imageH / viewSize.height
+
+            let padding: CGFloat = 20
+            let cropRect = CGRect(
+                x: max(0, x * scaleX - padding),
+                y: max(0, y * scaleY - padding),
+                width: min(imageW, w * scaleX + padding * 2),
+                height: min(imageH, h * scaleY + padding * 2)
+            )
+
+            if let croppedCG = cgImage.cropping(to: cropRect) {
+                return UIImage(cgImage: croppedCG, scale: fullScreenshot.scale, orientation: fullScreenshot.imageOrientation)
+            }
+        }
+
+        return fullScreenshot
     }
 
     private func captureDebugScreenshot(session: LoginSiteWebSession, attempt: LoginAttempt, step: String, note: String, autoResult: PPSRDebugScreenshot.AutoDetectedResult = .unknown) async {
