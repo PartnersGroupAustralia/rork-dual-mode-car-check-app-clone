@@ -354,115 +354,154 @@ struct SavedCredentialsView: View {
         }
     }
 
+    @State private var showFormatHelp: Bool = false
+
     private var importSheet: some View {
         NavigationStack {
-            List {
-                Section {
-                    Button {
-                        showFileImporter = true
-                    } label: {
-                        HStack(spacing: 12) {
+            ScrollView {
+                VStack(spacing: 20) {
+                    VStack(spacing: 12) {
+                        HStack(spacing: 14) {
                             Image(systemName: "doc.badge.plus")
-                                .font(.title3)
+                                .font(.title2)
                                 .foregroundStyle(.teal)
-                                .frame(width: 36, height: 36)
+                                .frame(width: 44, height: 44)
                                 .background(.teal.opacity(0.12))
-                                .clipShape(.rect(cornerRadius: 8))
-                            VStack(alignment: .leading, spacing: 2) {
+                                .clipShape(.rect(cornerRadius: 10))
+                            VStack(alignment: .leading, spacing: 3) {
                                 Text("Import from File")
-                                    .font(.subheadline.weight(.bold))
-                                Text("CSV or XLSX file")
-                                    .font(.caption2)
+                                    .font(.headline)
+                                Text("CSV, TSV, or XLSX")
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption).foregroundStyle(.tertiary)
+                            Button {
+                                showFileImporter = true
+                            } label: {
+                                Text("Browse")
+                                    .font(.subheadline.weight(.semibold))
+                                    .padding(.horizontal, 16).padding(.vertical, 8)
+                                    .background(.teal)
+                                    .foregroundStyle(.white)
+                                    .clipShape(Capsule())
+                            }
                         }
-                    }
 
-                    Picker("Column Mapping", selection: $selectedCSVMapping) {
-                        Text("Auto Detect").tag(PPSRCard.CSVColumnMapping.auto)
-                        Text("Columns A, B, C").tag(PPSRCard.CSVColumnMapping.columnsABC)
-                        Text("Columns C, E, F").tag(PPSRCard.CSVColumnMapping.columnsCEF)
-                    }
-                    .font(.subheadline)
-                } header: {
-                    Label("File Import", systemImage: "folder.fill")
-                } footer: {
-                    Text("CSV/TSV files with card number, expiry, and CVV. Auto detect tries columns C,E,F first then A,B,C.")
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Supported formats:")
-                            .font(.caption.bold()).foregroundStyle(.secondary)
-                        Group {
-                            Text("Pipe: 4111111111111111|12|28|123")
-                            Text("Colon: 4111111111111111:12:28:123")
-                            Text("Comma: 4111111111111111,12,28,123")
+                        Picker("Column Mapping", selection: $selectedCSVMapping) {
+                            Text("Auto Detect").tag(PPSRCard.CSVColumnMapping.auto)
+                            Text("Columns A, B, C").tag(PPSRCard.CSVColumnMapping.columnsABC)
+                            Text("Columns C, E, F").tag(PPSRCard.CSVColumnMapping.columnsCEF)
                         }
-                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
-
-                        Text("Rich text (order format):")
-                            .font(.caption.bold()).foregroundStyle(.secondary)
-                            .padding(.top, 4)
-                        Text("CCNUM: 5473541007693740 CVV: 054 EXP DATE: 12/27")
-                            .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                        .pickerStyle(.segmented)
+                        .font(.caption)
                     }
+                    .padding(16)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 14))
 
-                    TextEditor(text: $importText)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(10)
-                        .background(Color(.tertiarySystemGroupedBackground))
-                        .clipShape(.rect(cornerRadius: 10))
-                        .frame(minHeight: 160)
-                        .overlay(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Paste Cards", systemImage: "doc.on.doc")
+                                .font(.headline)
+                            Spacer()
+                            Button {
+                                showFormatHelp = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "questionmark.circle")
+                                    Text("Formats")
+                                }
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.teal)
+                            }
+                        }
+
+                        ZStack(alignment: .topLeading) {
+                            TextEditor(text: $importText)
+                                .font(.system(.body, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(12)
+                                .frame(minHeight: 220)
+
                             if importText.isEmpty {
                                 Text("Paste cards in any format...")
                                     .font(.system(.body, design: .monospaced))
                                     .foregroundStyle(.quaternary)
-                                    .padding(.horizontal, 14).padding(.vertical, 18)
+                                    .padding(.horizontal, 16).padding(.vertical, 20)
                                     .allowsHitTesting(false)
                             }
                         }
+                        .background(Color(.tertiarySystemGroupedBackground))
+                        .clipShape(.rect(cornerRadius: 12))
 
-                    HStack(spacing: 8) {
-                        Button {
-                            if let clip = UIPasteboard.general.string { importText = clip }
-                        } label: {
-                            Label("Paste", systemImage: "doc.on.clipboard")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.bordered).controlSize(.small)
+                        HStack(spacing: 8) {
+                            Button {
+                                if let clip = UIPasteboard.general.string { importText = clip }
+                            } label: {
+                                Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                                    .font(.subheadline.weight(.medium))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.teal)
+                            .controlSize(.small)
 
-                        Spacer()
+                            Spacer()
 
-                        let lineCount = importText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
-                        if lineCount > 0 {
-                            Text("\(lineCount) lines")
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                            let lineCount = importText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                            if lineCount > 0 {
+                                Text("\(lineCount) lines")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .background(Color(.tertiarySystemFill))
+                                    .clipShape(Capsule())
+                            }
                         }
                     }
-                } header: {
-                    Label("Paste Import", systemImage: "doc.on.doc")
-                }
+                    .padding(16)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 14))
 
-                if let result = fileImportResult {
-                    Section {
-                        HStack(spacing: 8) {
+                    if let result = fileImportResult {
+                        HStack(spacing: 10) {
                             Image(systemName: "checkmark.circle.fill")
+                                .font(.title3)
                                 .foregroundStyle(.green)
                             Text(result)
-                                .font(.system(.caption, design: .monospaced, weight: .bold))
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.green)
+                            Spacer()
                         }
+                        .padding(14)
+                        .background(Color.green.opacity(0.1))
+                        .clipShape(.rect(cornerRadius: 12))
                     }
+
+                    Button {
+                        vm.smartImportCards(importText)
+                        importText = ""
+                        showImportSheet = false
+                        fileImportResult = nil
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "square.and.arrow.down.fill")
+                            Text("Import Cards")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.teal.opacity(0.4) : Color.teal)
+                        .foregroundStyle(.white)
+                        .clipShape(.rect(cornerRadius: 14))
+                    }
+                    .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 32)
             }
-            .listStyle(.insetGrouped)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Import Cards")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -472,15 +511,6 @@ struct SavedCredentialsView: View {
                         importText = ""
                         fileImportResult = nil
                     }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Import Text") {
-                        vm.smartImportCards(importText)
-                        importText = ""
-                        showImportSheet = false
-                        fileImportResult = nil
-                    }
-                    .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .fileImporter(
@@ -518,10 +548,84 @@ struct SavedCredentialsView: View {
                     vm.log("File import error: \(error.localizedDescription)", level: .error)
                 }
             }
+            .sheet(isPresented: $showFormatHelp) {
+                formatHelpSheet
+            }
         }
-        .presentationDetents([.medium, .large])
+    }
+
+    private var formatHelpSheet: some View {
+        NavigationStack {
+            List {
+                Section("Delimiter Formats") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        formatExampleRow(label: "Pipe", example: "4111111111111111|12|28|123")
+                        formatExampleRow(label: "Colon", example: "4111111111111111:12:28:123")
+                        formatExampleRow(label: "Comma", example: "4111111111111111,12,28,123")
+                    }
+                }
+
+                Section("Rich Text (Order Format)") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Single line:")
+                            .font(.caption.bold()).foregroundStyle(.secondary)
+                        Text("CCNUM: 5473541007693740 CVV: 054 EXP DATE: 12/27")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.teal)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Multi-line block:")
+                            .font(.caption.bold()).foregroundStyle(.secondary)
+                        Text("CCNUM: 5483227225881915\nCVV: 680\nEXP DATE: 01/29")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.teal)
+                    }
+                }
+
+                Section("CSV / File Import") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Columns A, B, C → Card Number, Expiry, CVV")
+                            .font(.caption)
+                        Text("Columns C, E, F → Card Number, Expiry, CVV")
+                            .font(.caption)
+                        Text("Auto detect tries C,E,F first then A,B,C.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle.fill").foregroundStyle(.teal)
+                        Text("Duplicates are always excluded automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Supported Formats")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showFormatHelp = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
+    }
+
+    private func formatExampleRow(label: String, example: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .frame(width: 50, alignment: .leading)
+            Text(example)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.teal)
+        }
     }
 
     private func parseXLSXasCSV(url: URL) -> String? {
