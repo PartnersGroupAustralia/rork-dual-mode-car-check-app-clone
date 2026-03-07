@@ -184,6 +184,19 @@ class PPSRCard: Identifiable {
     }
 
     static func smartParse(_ input: String) -> [PPSRCard] {
+        let emojiBlocks = splitByCardEmoji(input)
+        if emojiBlocks.count > 1 {
+            var cards: [PPSRCard] = []
+            for block in emojiBlocks {
+                let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { continue }
+                if let card = parseRichTextBlock(trimmed) {
+                    cards.append(card)
+                }
+            }
+            if !cards.isEmpty { return cards }
+        }
+
         if let card = parseRichTextBlock(input) {
             return [card]
         }
@@ -221,6 +234,13 @@ class PPSRCard: Identifiable {
             }
         }
         return cards
+    }
+
+    private static func splitByCardEmoji(_ input: String) -> [String] {
+        let marker = "\u{1F4B3}"
+        let parts = input.components(separatedBy: marker)
+        if parts.count <= 1 { return [] }
+        return parts.dropFirst().map { marker + $0 }
     }
 
     static func parseRichTextBlock(_ block: String) -> PPSRCard? {
