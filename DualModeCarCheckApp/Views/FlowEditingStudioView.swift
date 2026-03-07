@@ -1560,7 +1560,6 @@ struct FlowSettingsView: View {
                 Toggle("Vision ML Fallback", isOn: $settings.loginButtonVisionMLFallback)
                 Toggle("OCR Fallback", isOn: $settings.loginButtonOCRFallback)
                 Toggle("Coordinate Fallback", isOn: $settings.loginButtonCoordinateFallback)
-                Toggle("Shadow DOM Search", isOn: $settings.loginButtonShadowDOMSearch)
             }
 
             Section("Submit Behavior") {
@@ -1570,7 +1569,6 @@ struct FlowSettingsView: View {
             }
 
             Section("Post-Submit Evaluation") {
-                Toggle("Welcome Text Detection", isOn: $settings.welcomeTextDetection)
                 Toggle("Redirect Detection", isOn: $settings.redirectDetection)
                 Toggle("Error Banner Detection", isOn: $settings.errorBannerDetection)
                 Toggle("Content Change Detection", isOn: $settings.contentChangeDetection)

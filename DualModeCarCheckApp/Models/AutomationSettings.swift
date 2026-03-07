@@ -1,6 +1,27 @@
 import Foundation
 
 nonisolated struct AutomationSettings: Codable, Sendable {
+    // MARK: - TRUE DETECTION (Primary Protocol)
+    var trueDetectionEnabled: Bool = true
+    var trueDetectionPriority: Bool = true
+    var trueDetectionHardPauseMs: Int = 4000
+    var trueDetectionTripleClickCount: Int = 3
+    var trueDetectionTripleClickDelayMs: Int = 1100
+    var trueDetectionMaxAttempts: Int = 4
+    var trueDetectionPostClickWaitMs: Int = 2500
+    var trueDetectionCooldownMinutes: Int = 15
+    var trueDetectionEmailSelector: String = "#email"
+    var trueDetectionPasswordSelector: String = "#login-password"
+    var trueDetectionSubmitSelector: String = "#login-submit"
+    var trueDetectionSuccessMarkers: [String] = ["balance", "wallet", "my account", "logout"]
+    var trueDetectionTerminalKeywords: [String] = ["temporarily disabled", "account is disabled"]
+    var trueDetectionErrorBannerSelectors: [String] = [".error-banner", ".alert-danger"]
+    var trueDetectionNoProxyRotation: Bool = true
+    var trueDetectionStrictWaits: Bool = true
+    var trueDetectionIgnorePlaceholders: Bool = true
+    var trueDetectionIgnoreXPaths: Bool = true
+    var trueDetectionIgnoreClassNames: Bool = true
+
     // MARK: - Page Loading
     var pageLoadTimeout: TimeInterval = 30
     var pageLoadRetries: Int = 3
@@ -36,6 +57,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var patternPriorityOrder: [String] = LoginFormPatternList.defaultPriorityOrder
     var preferCalibratedPatternsFirst: Bool = true
     var patternLearningEnabled: Bool = true
+
+    // MARK: - Fallback Chain (Anti-Bot)
     var fallbackToLegacyFill: Bool = true
     var fallbackToOCRClick: Bool = true
     var fallbackToVisionMLClick: Bool = true
@@ -49,11 +72,13 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var rapidPollIntervalMs: Int = 200
 
     // MARK: - Post-Submit Evaluation
-    var welcomeTextDetection: Bool = true
     var redirectDetection: Bool = true
     var errorBannerDetection: Bool = true
     var contentChangeDetection: Bool = true
     var evaluationStrictness: EvaluationStrictness = .normal
+    var capturePageContent: Bool = true
+    // Kept for backward compat but unused by True Detection eval
+    var welcomeTextDetection: Bool = false
 
     // MARK: - Retry / Requeue
     var requeueOnTimeout: Bool = true
@@ -80,7 +105,6 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var screenshotOnFailure: Bool = true
     var screenshotOnSuccess: Bool = true
     var maxScreenshotRetention: Int = 500
-    var capturePageContent: Bool = true
 
     // MARK: - Concurrency
     var maxConcurrency: Int = 8
@@ -114,7 +138,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var preActionPauseMaxMs: Int = 300
     var gaussianTimingDistribution: Bool = true
 
-    // MARK: - Login Button Detection
+    // MARK: - Login Button (Fallback modes only)
     var loginButtonDetectionMode: ButtonDetectionMode = .trueDetection
     var loginButtonTextMatches: [String] = ["Log in", "Login", "Sign in", "Sign In", "Submit", "Continue", "Next", "Go", "Enter"]
     var loginButtonCustomSelector: String = ""
@@ -134,17 +158,18 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var loginButtonClickOffsetMaxPx: Int = 5
     var loginButtonEnterKeyFallback: Bool = true
     var loginButtonFormSubmitFallback: Bool = true
+    var loginButtonVisionMLFallback: Bool = true
+    var loginButtonOCRFallback: Bool = true
+    var loginButtonCoordinateFallback: Bool = true
+    var loginButtonMinSizePx: Int = 20
+    var loginButtonMaxCandidates: Int = 5
+    var loginButtonConfidenceThreshold: Double = 0.5
+    // Legacy DOM settings — kept for backward compat, not used by True Detection
     var loginButtonAriaLabelMatch: Bool = true
     var loginButtonRoleMatch: Bool = true
     var loginButtonImageButtonDetection: Bool = true
     var loginButtonShadowDOMSearch: Bool = true
     var loginButtonIframeSearch: Bool = false
-    var loginButtonMinSizePx: Int = 20
-    var loginButtonMaxCandidates: Int = 5
-    var loginButtonConfidenceThreshold: Double = 0.5
-    var loginButtonVisionMLFallback: Bool = true
-    var loginButtonOCRFallback: Bool = true
-    var loginButtonCoordinateFallback: Bool = true
 
     // MARK: - Time Delays
     var globalPreActionDelayMs: Int = 0
@@ -234,28 +259,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var mobileViewportHeight: Int = 844
     var deviceScaleFactor: Double = 2.0
 
-    // MARK: - TRUE DETECTION (Hardcoded Interaction Protocol)
-    var trueDetectionEnabled: Bool = true
-    var trueDetectionPriority: Bool = true
-    var trueDetectionHardPauseMs: Int = 4000
-    var trueDetectionTripleClickCount: Int = 3
-    var trueDetectionTripleClickDelayMs: Int = 1100
-    var trueDetectionMaxAttempts: Int = 4
-    var trueDetectionPostClickWaitMs: Int = 2500
-    var trueDetectionCooldownMinutes: Int = 15
-    var trueDetectionEmailSelector: String = "#email"
-    var trueDetectionPasswordSelector: String = "#login-password"
-    var trueDetectionSubmitSelector: String = "#login-submit"
-    var trueDetectionSuccessMarkers: [String] = ["balance", "wallet", "my account", "logout"]
-    var trueDetectionTerminalKeywords: [String] = ["temporarily disabled", "account is disabled"]
-    var trueDetectionErrorBannerSelectors: [String] = [".error-banner", ".alert-danger"]
-    var trueDetectionNoProxyRotation: Bool = true
-    var trueDetectionStrictWaits: Bool = true
-    var trueDetectionIgnorePlaceholders: Bool = true
-    var trueDetectionIgnoreXPaths: Bool = true
-    var trueDetectionIgnoreClassNames: Bool = true
-
-    // MARK: - Speed Optimization
+    // MARK: - Speed Optimization (legacy)
     var speedOptimizationEnabled: Bool = false
     var autoTuneConcurrency: Bool = false
     var autoTuneDelays: Bool = false
@@ -264,7 +268,8 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     // MARK: - Recorded Flow Override
     var urlFlowAssignments: [URLFlowAssignment] = []
 
-    // MARK: - Evaluation Strictness
+    // MARK: - Enums
+
     nonisolated enum EvaluationStrictness: String, Codable, CaseIterable, Sendable {
         case lenient = "Lenient"
         case normal = "Normal"
@@ -273,7 +278,6 @@ nonisolated struct AutomationSettings: Codable, Sendable {
 
     nonisolated enum ButtonDetectionMode: String, Codable, CaseIterable, Sendable {
         case trueDetection = "TRUE DETECTION"
-        case cssSelector = "Legacy DOM"
         case textMatch = "Text Match"
         case visionML = "Vision ML"
         case hybrid = "Hybrid"
