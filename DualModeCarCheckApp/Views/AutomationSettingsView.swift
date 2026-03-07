@@ -28,6 +28,7 @@ struct AutomationSettingsView: View {
             pageLoadingSection
             fieldDetectionSection
             cookieConsentSection
+            trueDetectionSection
             credentialEntrySection
             formInteractionSection
             loginButtonSection
@@ -127,6 +128,75 @@ struct AutomationSettingsView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
+        }
+    }
+
+    // MARK: - TRUE DETECTION
+
+    private var trueDetectionSection: some View {
+        Section {
+            Toggle(isOn: $vm.automationSettings.trueDetectionEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("TRUE DETECTION")
+                        .font(.headline)
+                    Text("Hardcoded Interaction Protocol — bypasses all DOM detection")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tint(accentColor)
+
+            if vm.automationSettings.trueDetectionEnabled {
+                Toggle("Priority #1 (Always First)", isOn: $vm.automationSettings.trueDetectionPriority)
+                    .tint(accentColor)
+
+                Stepper("Hard Pause: \(vm.automationSettings.trueDetectionHardPauseMs)ms", value: $vm.automationSettings.trueDetectionHardPauseMs, in: 1000...8000, step: 500)
+                Stepper("Triple-Click Count: \(vm.automationSettings.trueDetectionTripleClickCount)", value: $vm.automationSettings.trueDetectionTripleClickCount, in: 1...10)
+                Stepper("Click Delay: \(vm.automationSettings.trueDetectionTripleClickDelayMs)ms", value: $vm.automationSettings.trueDetectionTripleClickDelayMs, in: 200...3000, step: 100)
+                Stepper("Max Attempts: \(vm.automationSettings.trueDetectionMaxAttempts)", value: $vm.automationSettings.trueDetectionMaxAttempts, in: 1...10)
+                Stepper("Post-Click Wait: \(vm.automationSettings.trueDetectionPostClickWaitMs)ms", value: $vm.automationSettings.trueDetectionPostClickWaitMs, in: 500...5000, step: 250)
+                Stepper("Cooldown: \(vm.automationSettings.trueDetectionCooldownMinutes) min", value: $vm.automationSettings.trueDetectionCooldownMinutes, in: 1...60)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Email Selector").font(.caption).foregroundStyle(.secondary)
+                    TextField("#email", text: $vm.automationSettings.trueDetectionEmailSelector)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Password Selector").font(.caption).foregroundStyle(.secondary)
+                    TextField("#login-password", text: $vm.automationSettings.trueDetectionPasswordSelector)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Submit Selector").font(.caption).foregroundStyle(.secondary)
+                    TextField("#login-submit", text: $vm.automationSettings.trueDetectionSubmitSelector)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+
+                Toggle("No Proxy Rotation", isOn: $vm.automationSettings.trueDetectionNoProxyRotation)
+                    .tint(accentColor)
+                Toggle("Strict Waits", isOn: $vm.automationSettings.trueDetectionStrictWaits)
+                    .tint(accentColor)
+                Toggle("Ignore Placeholders", isOn: $vm.automationSettings.trueDetectionIgnorePlaceholders)
+                    .tint(accentColor)
+                Toggle("Ignore XPaths", isOn: $vm.automationSettings.trueDetectionIgnoreXPaths)
+                    .tint(accentColor)
+                Toggle("Ignore Class Names", isOn: $vm.automationSettings.trueDetectionIgnoreClassNames)
+                    .tint(accentColor)
+            }
+        } header: {
+            HStack {
+                Image(systemName: "shield.checkered")
+                Text("TRUE DETECTION Protocol")
+            }
+        } footer: {
+            Text("Hardcoded selectors: #email → #login-password → Triple-Click #login-submit. Success = balance/wallet/my account/logout. No DOM guessing.")
         }
     }
 

@@ -3,6 +3,7 @@ import WebKit
 import UIKit
 
 nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
+    case trueDetection = "TRUE DETECTION"
     case tabNavigation = "Tab Navigation"
     case clickFocusSequential = "Click-Focus Sequential"
     case execCommandInsert = "ExecCommand Insert"
@@ -17,6 +18,8 @@ nonisolated enum LoginFormPattern: String, CaseIterable, Codable, Sendable {
 
     var description: String {
         switch self {
+        case .trueDetection:
+            "Hardcoded Interaction Protocol: Triple-Wait → #email → #login-password → Triple-Click #login-submit with force dispatch"
         case .tabNavigation:
             "Click email → char-by-char type → Tab to password → char-by-char type → Enter to submit"
         case .clickFocusSequential:
@@ -65,10 +68,7 @@ class HumanInteractionEngine {
     }
 
     func selectBestPattern(for url: String) -> LoginFormPattern {
-        if let learned = patternLearning.bestPattern(for: url) {
-            return learned
-        }
-        return LoginFormPattern.allCases.randomElement() ?? .tabNavigation
+        return .trueDetection
     }
 
     func executePattern(
@@ -83,6 +83,8 @@ class HumanInteractionEngine {
 
         let result: HumanPatternResult
         switch pattern {
+        case .trueDetection:
+            result = await executeTrueDetectionPattern(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         case .tabNavigation:
             result = await executeTabNavigation(username: username, password: password, executeJS: executeJS, sessionId: sessionId)
         case .clickFocusSequential:
@@ -110,6 +112,102 @@ class HumanInteractionEngine {
         let elapsed = Date().timeIntervalSince(startTime)
         logger.log("HumanInteraction: pattern '\(pattern.rawValue)' completed in \(Int(elapsed * 1000))ms — fillSuccess:\(result.usernameFilled && result.passwordFilled) submitSuccess:\(result.submitTriggered)", category: .automation, level: result.submitTriggered ? .success : .warning, sessionId: sessionId, durationMs: Int(elapsed * 1000))
 
+        return result
+    }
+
+    // MARK: - Pattern 0: TRUE DETECTION (Hardcoded Interaction Protocol)
+    private func executeTrueDetectionPattern(username: String, password: String, executeJS: @escaping (String) async -> String?, sessionId: String) async -> HumanPatternResult {
+        var result = HumanPatternResult(pattern: .trueDetection)
+
+        logger.log("TrueDetection Pattern: waiting for DOM complete...", category: .automation, level: .trace, sessionId: sessionId)
+        let domStart = Date()
+        while Date().timeIntervalSince(domStart) < 10 {
+            let ready = await executeJS("document.readyState")
+            if ready == "complete" { break }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+
+        logger.log("TrueDetection Pattern: hard pause 4000ms", category: .automation, level: .trace, sessionId: sessionId)
+        try? await Task.sleep(for: .milliseconds(4000))
+
+        let escapedUser = username.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let emailJS = """
+        (function() {
+            var el = document.querySelector('#email');
+            if (!el) return 'NOT_FOUND';
+            el.focus();
+            el.dispatchEvent(new Event('focus', {bubbles: true}));
+            el.value = '';
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, '\(escapedUser)'); } else { el.value = '\(escapedUser)'; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.dispatchEvent(new Event('blur', {bubbles: true}));
+            return el.value === '\(escapedUser)' ? 'OK' : 'VALUE_MISMATCH';
+        })();
+        """
+        let emailResult = await executeJS(emailJS)
+        result.usernameFilled = emailResult == "OK" || emailResult == "VALUE_MISMATCH"
+        logger.log("TrueDetection: #email fill → \(emailResult ?? "nil")", category: .automation, level: result.usernameFilled ? .success : .error, sessionId: sessionId)
+
+        if !result.usernameFilled { return result }
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 300...600)))
+
+        let escapedPass = password.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let passJS = """
+        (function() {
+            var el = document.querySelector('#login-password');
+            if (!el) return 'NOT_FOUND';
+            el.focus();
+            el.dispatchEvent(new Event('focus', {bubbles: true}));
+            el.value = '';
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, '\(escapedPass)'); } else { el.value = '\(escapedPass)'; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.dispatchEvent(new Event('blur', {bubbles: true}));
+            return el.value === '\(escapedPass)' ? 'OK' : 'VALUE_MISMATCH';
+        })();
+        """
+        let passResult = await executeJS(passJS)
+        result.passwordFilled = passResult == "OK" || passResult == "VALUE_MISMATCH"
+        logger.log("TrueDetection: #login-password fill → \(passResult ?? "nil")", category: .automation, level: result.passwordFilled ? .success : .error, sessionId: sessionId)
+
+        if !result.passwordFilled { return result }
+        try? await Task.sleep(for: .milliseconds(Int.random(in: 300...600)))
+
+        logger.log("TrueDetection: starting triple-click on #login-submit", category: .automation, level: .info, sessionId: sessionId)
+        for i in 0..<3 {
+            let clickJS = """
+            (function() {
+                var btn = document.querySelector('#login-submit');
+                if (!btn) return 'NOT_FOUND';
+                btn.scrollIntoView({behavior: 'instant', block: 'center'});
+                var r = btn.getBoundingClientRect();
+                var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
+                var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
+                btn.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                btn.dispatchEvent(new PointerEvent('pointerup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                btn.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                btn.click();
+                return 'CLICKED_' + \(i);
+            })();
+            """
+            let clickResult = await executeJS(clickJS)
+            logger.log("TrueDetection: triple-click \(i + 1)/3 → \(clickResult ?? "nil")", category: .automation, level: .trace, sessionId: sessionId)
+            if clickResult == "NOT_FOUND" && i == 0 {
+                return result
+            }
+            if i < 2 {
+                try? await Task.sleep(for: .milliseconds(1100))
+            }
+        }
+
+        result.submitTriggered = true
+        result.submitMethod = "TRUE_DETECTION_TRIPLE_CLICK"
+        logger.log("TrueDetection: triple-click complete", category: .automation, level: .success, sessionId: sessionId)
         return result
     }
 

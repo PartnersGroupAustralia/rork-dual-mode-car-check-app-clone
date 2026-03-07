@@ -11,12 +11,58 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
     var settings: AutomationSettings
 
     static let builtInTemplates: [AutomationTemplate] = [
+        trueDetectionProtocol,
         visionMLHunter,
         coordinateSniper,
         stealthGhost,
         speedDemon,
         resilientTank,
     ]
+
+    static let trueDetectionProtocol = AutomationTemplate(
+        name: "TRUE DETECTION",
+        description: "Hardcoded Interaction Protocol: Triple-Wait → #email → #login-password → Triple-Click #login-submit. Success = balance/wallet/my account/logout. No DOM guessing.",
+        icon: "shield.checkered",
+        color: "blue",
+        isBuiltIn: true,
+        settings: {
+            var s = AutomationSettings()
+            s.trueDetectionEnabled = true
+            s.trueDetectionPriority = true
+            s.trueDetectionHardPauseMs = 4000
+            s.trueDetectionTripleClickCount = 3
+            s.trueDetectionTripleClickDelayMs = 1100
+            s.trueDetectionMaxAttempts = 4
+            s.trueDetectionPostClickWaitMs = 2500
+            s.trueDetectionCooldownMinutes = 15
+            s.trueDetectionNoProxyRotation = true
+            s.trueDetectionStrictWaits = true
+            s.loginButtonDetectionMode = .trueDetection
+            s.loginButtonClickMethod = .dispatchEvent
+            s.fallbackToLegacyFill = true
+            s.fallbackToOCRClick = true
+            s.fallbackToVisionMLClick = true
+            s.fallbackToCoordinateClick = true
+            s.stealthJSInjection = true
+            s.fingerprintSpoofing = true
+            s.humanMouseMovement = false
+            s.patternPriorityOrder = [
+                "TRUE DETECTION",
+                "Calibrated Typing",
+                "Calibrated Direct",
+                "Tab Navigation",
+                "React Native Setter",
+                "Form Submit Direct",
+                "Coordinate Click",
+                "Vision ML Coordinate",
+                "Click-Focus Sequential",
+                "ExecCommand Insert",
+                "Slow Deliberate Typer",
+                "Mobile Touch Burst",
+            ]
+            return s
+        }()
+    )
 
     static let visionMLHunter = AutomationTemplate(
         name: "Vision ML Hunter",
@@ -50,6 +96,7 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
             s.gaussianTimingDistribution = true
             s.pageStabilizationDelayMs = 1200
             s.patternPriorityOrder = [
+                "TRUE DETECTION",
                 "Vision ML Coordinate",
                 "Coordinate Click",
                 "Mobile Touch Burst",
@@ -104,6 +151,7 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
             s.webGLNoise = true
             s.canvasNoise = true
             s.patternPriorityOrder = [
+                "TRUE DETECTION",
                 "Coordinate Click",
                 "Vision ML Coordinate",
                 "Mobile Touch Burst",
@@ -174,6 +222,7 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
             s.fallbackToCoordinateClick = true
             s.fallbackToLegacyFill = false
             s.patternPriorityOrder = [
+                "TRUE DETECTION",
                 "Slow Deliberate Typer",
                 "Click-Focus Sequential",
                 "Calibrated Typing",
@@ -246,6 +295,7 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
             s.fallbackToCoordinateClick = true
             s.fallbackToLegacyFill = false
             s.patternPriorityOrder = [
+                "TRUE DETECTION",
                 "React Native Setter",
                 "Form Submit Direct",
                 "Calibrated Direct",
@@ -316,6 +366,7 @@ nonisolated struct AutomationTemplate: Codable, Sendable, Identifiable {
             s.waitForResponseSeconds = 8.0
             s.waitForJSRenderMs = 5000
             s.patternPriorityOrder = [
+                "TRUE DETECTION",
                 "Calibrated Typing",
                 "Calibrated Direct",
                 "Vision ML Coordinate",

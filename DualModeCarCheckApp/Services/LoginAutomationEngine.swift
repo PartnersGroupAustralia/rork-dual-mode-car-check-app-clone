@@ -23,6 +23,7 @@ class LoginAutomationEngine {
     private let logger = DebugLogger.shared
     private let visionML = VisionMLService.shared
     private let debugButtonService = DebugLoginButtonService.shared
+    private let trueDetection = TrueDetectionService.shared
     var onScreenshot: ((PPSRDebugScreenshot) -> Void)?
     var onConnectionFailure: ((String) -> Void)?
     var onUnusualFailure: ((String) -> Void)?
@@ -218,10 +219,12 @@ class LoginAutomationEngine {
         var usedPatterns: [LoginFormPattern] = []
 
         let priorityPatterns: [LoginFormPattern]
-        if calibration?.isCalibrated == true {
-            priorityPatterns = [.calibratedTyping, .calibratedDirect, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .visionMLCoordinate, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
+        if automationSettings.trueDetectionEnabled && automationSettings.trueDetectionPriority {
+            priorityPatterns = [.trueDetection, .calibratedTyping, .calibratedDirect, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .visionMLCoordinate, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
+        } else if calibration?.isCalibrated == true {
+            priorityPatterns = [.calibratedTyping, .calibratedDirect, .trueDetection, .tabNavigation, .reactNativeSetter, .formSubmitDirect, .coordinateClick, .visionMLCoordinate, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst]
         } else {
-            priorityPatterns = [.tabNavigation, .reactNativeSetter, .visionMLCoordinate, .formSubmitDirect, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst, .calibratedDirect, .coordinateClick, .calibratedTyping]
+            priorityPatterns = [.trueDetection, .tabNavigation, .reactNativeSetter, .visionMLCoordinate, .formSubmitDirect, .clickFocusSequential, .execCommandInsert, .slowDeliberateTyper, .mobileTouchBurst, .calibratedDirect, .coordinateClick, .calibratedTyping]
         }
 
         for cycle in 1...maxSubmitCycles {
@@ -230,11 +233,10 @@ class LoginAutomationEngine {
 
             let selectedPattern: LoginFormPattern
             if cycle == 1 {
-                let learned = humanEngine.selectBestPattern(for: targetURLString)
-                if calibration?.isCalibrated == true && !usedPatterns.contains(.calibratedTyping) {
-                    selectedPattern = .calibratedTyping
+                if automationSettings.trueDetectionEnabled {
+                    selectedPattern = .trueDetection
                 } else {
-                    selectedPattern = learned
+                    selectedPattern = humanEngine.selectBestPattern(for: targetURLString)
                 }
             } else {
                 let remaining = priorityPatterns.filter { !usedPatterns.contains($0) }
@@ -552,11 +554,21 @@ class LoginAutomationEngine {
         var incorrectSignals: [String] = []
         var disabledSignals: [String] = []
 
-        // --- SUCCESS: ONLY "Welcome!" text (case sensitive) OR homepage redirect ---
+        // --- SUCCESS: TRUE DETECTION markers (balance, wallet, my account, logout) OR homepage redirect ---
+        // CRITICAL: "welcome" is NOT a valid success indicator per TRUE DETECTION protocol
+
+        let trueDetectionSuccessMarkers = ["balance", "wallet", "my account", "logout"]
+        for marker in trueDetectionSuccessMarkers {
+            if contentLower.contains(marker) {
+                successScore += 100
+                successSignals.append("+100 TRUE DETECTION marker '\(marker)' found")
+                break
+            }
+        }
 
         if welcomeTextFound {
-            successScore += 100
-            successSignals.append("+100 'Welcome!' text captured via rapid poll")
+            successScore += 40
+            successSignals.append("+40 'Welcome!' text (secondary indicator only)")
         }
 
         if redirectedToHomepage && !urlLower.contains("/login") && !urlLower.contains("/signin") {
@@ -694,7 +706,8 @@ class LoginAutomationEngine {
 
         if successScore >= successThreshold && successScore > incorrectScore && successScore > disabledScore {
             let topSignals = successSignals.prefix(3).joined(separator: ", ")
-            let reason = welcomeTextFound ? "WELCOME! TEXT CAPTURED" : "HOMEPAGE REDIRECT CONFIRMED"
+            let hasRealMarker = trueDetectionSuccessMarkers.contains { contentLower.contains($0) }
+            let reason = hasRealMarker ? "TRUE DETECTION SUCCESS MARKER CONFIRMED" : (redirectedToHomepage ? "HOMEPAGE REDIRECT CONFIRMED" : "SUCCESS SIGNALS DETECTED")
             return EvaluationResult(
                 outcome: .success,
                 score: successScore,
@@ -713,15 +726,14 @@ class LoginAutomationEngine {
             )
         }
 
-        // DEFAULT: No Welcome! text, no redirect, no clear error = NO ACC
-        // Ambiguous failures are assumed to be no account unless disabled text is present
+        // DEFAULT: No TRUE DETECTION markers, no redirect, no clear error = NO ACC
         let maxScore = max(successScore, max(incorrectScore, disabledScore))
         let allSignals = successSignals + incorrectSignals + disabledSignals
         let snippet = String(pageContent.prefix(150)).replacingOccurrences(of: "\n", with: " ")
         return EvaluationResult(
             outcome: .noAcc,
             score: maxScore,
-            reason: "No account (ambiguous fail) — no Welcome! text, no redirect (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
+            reason: "No account (ambiguous fail) — no TRUE DETECTION markers, no redirect (success:\(successScore) incorrect:\(incorrectScore) disabled:\(disabledScore)) content: \"\(snippet)\"",
             signals: allSignals
         )
     }

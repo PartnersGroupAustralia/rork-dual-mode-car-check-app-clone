@@ -386,7 +386,131 @@ class LoginSiteWebSession: NSObject {
         return (false, "\(fieldName) coordinate fill failed: \(result ?? "nil")")
     }
 
-        func fillUsername(_ username: String) async -> (success: Bool, detail: String) {
+    // MARK: - TRUE DETECTION Hardcoded Methods
+
+    func trueDetectionFillEmail(_ username: String) async -> (success: Bool, detail: String) {
+        let escaped = username.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = """
+        (function() {
+            var el = document.querySelector('#email');
+            if (!el) return 'NOT_FOUND';
+            el.focus();
+            el.dispatchEvent(new Event('focus', {bubbles: true}));
+            el.value = '';
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.dispatchEvent(new Event('blur', {bubbles: true}));
+            return el.value === '\(escaped)' ? 'OK' : 'VALUE_MISMATCH';
+        })();
+        """
+        let result = await executeJS(js)
+        if result == "OK" || result == "VALUE_MISMATCH" {
+            return (true, "TRUE DETECTION: Email filled via #email")
+        }
+        return (false, "TRUE DETECTION: Email fill failed on #email — \(result ?? "nil")")
+    }
+
+    func trueDetectionFillPassword(_ password: String) async -> (success: Bool, detail: String) {
+        let escaped = password.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = """
+        (function() {
+            var el = document.querySelector('#login-password');
+            if (!el) return 'NOT_FOUND';
+            el.focus();
+            el.dispatchEvent(new Event('focus', {bubbles: true}));
+            el.value = '';
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.dispatchEvent(new Event('blur', {bubbles: true}));
+            return el.value === '\(escaped)' ? 'OK' : 'VALUE_MISMATCH';
+        })();
+        """
+        let result = await executeJS(js)
+        if result == "OK" || result == "VALUE_MISMATCH" {
+            return (true, "TRUE DETECTION: Password filled via #login-password")
+        }
+        return (false, "TRUE DETECTION: Password fill failed on #login-password — \(result ?? "nil")")
+    }
+
+    func trueDetectionTripleClickSubmit(clickCount: Int = 3, delayMs: Int = 1100) async -> (success: Bool, detail: String) {
+        let checkJS = """
+        (function() {
+            var btn = document.querySelector('#login-submit');
+            if (!btn) return 'NOT_FOUND';
+            return 'FOUND';
+        })();
+        """
+        let checkResult = await executeJS(checkJS)
+        guard checkResult == "FOUND" else {
+            return (false, "TRUE DETECTION: Submit button #login-submit NOT_FOUND")
+        }
+
+        for i in 0..<clickCount {
+            let clickJS = """
+            (function() {
+                var btn = document.querySelector('#login-submit');
+                if (!btn) return 'NOT_FOUND';
+                btn.scrollIntoView({behavior:'instant',block:'center'});
+                var r = btn.getBoundingClientRect();
+                var cx = r.left + r.width * (0.3 + Math.random() * 0.4);
+                var cy = r.top + r.height * (0.3 + Math.random() * 0.4);
+                btn.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0,buttons:1}));
+                btn.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0,buttons:1}));
+                btn.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,pointerId:1,pointerType:'mouse',button:0}));
+                btn.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy,button:0}));
+                btn.click();
+                return 'CLICKED';
+            })();
+            """
+            _ = await executeJS(clickJS)
+            if i < clickCount - 1 {
+                try? await Task.sleep(for: .milliseconds(delayMs))
+            }
+        }
+        return (true, "TRUE DETECTION: Triple-click on #login-submit (\(clickCount) clicks, \(delayMs)ms apart)")
+    }
+
+    func trueDetectionValidateSuccess() async -> (success: Bool, marker: String?) {
+        let pageContent = await getPageContent()
+        let contentLower = pageContent.lowercased()
+        let markers = ["balance", "wallet", "my account", "logout"]
+        for marker in markers {
+            if contentLower.contains(marker) {
+                return (true, marker)
+            }
+        }
+        return (false, nil)
+    }
+
+    func trueDetectionCheckTerminalError() async -> (isTerminal: Bool, keyword: String?) {
+        let pageContent = await getPageContent()
+        let contentLower = pageContent.lowercased()
+        let terminalKeywords = ["temporarily disabled", "account is disabled"]
+        for keyword in terminalKeywords {
+            if contentLower.contains(keyword) {
+                return (true, keyword)
+            }
+        }
+        let bannerSelectors = [".error-banner", ".alert-danger"]
+        for selector in bannerSelectors {
+            let escaped = selector.replacingOccurrences(of: "'", with: "\\'")
+            let js = "(function(){var el=document.querySelector('\(escaped)');if(!el||el.offsetParent===null)return'NONE';return'BANNER:'+el.textContent.trim().substring(0,200);})();"
+            let result = await executeJS(js)
+            if let result, result.hasPrefix("BANNER:") {
+                return (true, String(result.dropFirst(7)))
+            }
+        }
+        return (false, nil)
+    }
+
+    // MARK: - Legacy Fill Methods
+
+    func fillUsername(_ username: String) async -> (success: Bool, detail: String) {
         let strategies = """
         [
             {"type":"id","value":"email"},{"type":"id","value":"username"},{"type":"id","value":"login-email"},
@@ -1022,6 +1146,20 @@ class LoginSiteWebSession: NSObject {
                 contentChanged = true
             }
 
+            let trueDetectionMarkers = ["balance", "wallet", "my account", "logout"]
+            let pageTextLower = pageText.lowercased()
+            var trueDetectionHit = false
+            for marker in trueDetectionMarkers {
+                if pageTextLower.contains(marker) {
+                    trueDetectionHit = true
+                    welcomeFound = true
+                    welcomeContext = "TRUE DETECTION marker: \(marker)"
+                    welcomeScreenshot = await captureScreenshot()
+                    break
+                }
+            }
+            if trueDetectionHit { break }
+
             if pageText.contains("Welcome!") {
                 welcomeFound = true
                 let result = GreenBannerDetector.detectWelcomeText(in: pageText)
@@ -1034,7 +1172,16 @@ class LoginSiteWebSession: NSObject {
                 try? await Task.sleep(for: .milliseconds(500))
                 let postRedirectText = await executeJS("document.body ? document.body.innerText.substring(0, 2000) : ''") ?? ""
                 lastContent = postRedirectText
-                if postRedirectText.contains("Welcome!") {
+                let postLower = postRedirectText.lowercased()
+                for marker in ["balance", "wallet", "my account", "logout"] {
+                    if postLower.contains(marker) {
+                        welcomeFound = true
+                        welcomeContext = "TRUE DETECTION marker post-redirect: \(marker)"
+                        welcomeScreenshot = await captureScreenshot()
+                        break
+                    }
+                }
+                if !welcomeFound && postRedirectText.contains("Welcome!") {
                     welcomeFound = true
                     let result = GreenBannerDetector.detectWelcomeText(in: postRedirectText)
                     welcomeContext = result.exact

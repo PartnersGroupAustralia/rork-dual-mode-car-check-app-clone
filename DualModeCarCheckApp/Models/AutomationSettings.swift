@@ -115,7 +115,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var gaussianTimingDistribution: Bool = true
 
     // MARK: - Login Button Detection
-    var loginButtonDetectionMode: ButtonDetectionMode = .hybrid
+    var loginButtonDetectionMode: ButtonDetectionMode = .trueDetection
     var loginButtonTextMatches: [String] = ["Log in", "Login", "Sign in", "Sign In", "Submit", "Continue", "Next", "Go", "Enter"]
     var loginButtonCustomSelector: String = ""
     var loginButtonClickMethod: ButtonClickMethod = .humanClick
@@ -234,6 +234,33 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     var mobileViewportHeight: Int = 844
     var deviceScaleFactor: Double = 2.0
 
+    // MARK: - TRUE DETECTION (Hardcoded Interaction Protocol)
+    var trueDetectionEnabled: Bool = true
+    var trueDetectionPriority: Bool = true
+    var trueDetectionHardPauseMs: Int = 4000
+    var trueDetectionTripleClickCount: Int = 3
+    var trueDetectionTripleClickDelayMs: Int = 1100
+    var trueDetectionMaxAttempts: Int = 4
+    var trueDetectionPostClickWaitMs: Int = 2500
+    var trueDetectionCooldownMinutes: Int = 15
+    var trueDetectionEmailSelector: String = "#email"
+    var trueDetectionPasswordSelector: String = "#login-password"
+    var trueDetectionSubmitSelector: String = "#login-submit"
+    var trueDetectionSuccessMarkers: [String] = ["balance", "wallet", "my account", "logout"]
+    var trueDetectionTerminalKeywords: [String] = ["temporarily disabled", "account is disabled"]
+    var trueDetectionErrorBannerSelectors: [String] = [".error-banner", ".alert-danger"]
+    var trueDetectionNoProxyRotation: Bool = true
+    var trueDetectionStrictWaits: Bool = true
+    var trueDetectionIgnorePlaceholders: Bool = true
+    var trueDetectionIgnoreXPaths: Bool = true
+    var trueDetectionIgnoreClassNames: Bool = true
+
+    // MARK: - Speed Optimization
+    var speedOptimizationEnabled: Bool = false
+    var autoTuneConcurrency: Bool = false
+    var autoTuneDelays: Bool = false
+    var speedProfileApplied: Bool = false
+
     // MARK: - Recorded Flow Override
     var urlFlowAssignments: [URLFlowAssignment] = []
 
@@ -245,6 +272,7 @@ nonisolated struct AutomationSettings: Codable, Sendable {
     }
 
     nonisolated enum ButtonDetectionMode: String, Codable, CaseIterable, Sendable {
+        case trueDetection = "TRUE DETECTION"
         case cssSelector = "Legacy DOM"
         case textMatch = "Text Match"
         case visionML = "Vision ML"
@@ -289,6 +317,7 @@ nonisolated struct URLFlowAssignment: Codable, Sendable, Identifiable {
 
 nonisolated enum LoginFormPatternList {
     static let allNames: [String] = [
+        "TRUE DETECTION",
         "Tab Navigation",
         "Click-Focus Sequential",
         "ExecCommand Insert",
@@ -303,6 +332,7 @@ nonisolated enum LoginFormPatternList {
     ]
 
     static let defaultPriorityOrder: [String] = [
+        "TRUE DETECTION",
         "Calibrated Typing",
         "Calibrated Direct",
         "Tab Navigation",
