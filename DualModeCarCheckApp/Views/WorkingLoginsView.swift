@@ -7,14 +7,30 @@ struct WorkingLoginsView: View {
     @State private var showFileExporter: Bool = false
     @State private var exportDocument: CardExportDocument?
     @State private var viewMode: ViewMode = .list
+    @State private var binFilter: String = ""
+    @State private var showBINFilter: Bool = false
+
+    private var filteredWorkingCards: [PPSRCard] {
+        let cards = vm.workingCards
+        if binFilter.isEmpty { return cards }
+        return cards.filter { $0.binPrefix.hasPrefix(binFilter) }
+    }
+
+    private var availableBINs: [String] {
+        let bins = Set(vm.workingCards.map(\.binPrefix))
+        return bins.sorted()
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.workingCards.isEmpty {
+            if filteredWorkingCards.isEmpty && binFilter.isEmpty && vm.workingCards.isEmpty {
                 ContentUnavailableView("No Working Cards", systemImage: "checkmark.shield", description: Text("Cards that pass PPSR tests will appear here."))
             } else {
                 exportBar
-                if viewMode == .tile {
+                if showBINFilter { binFilterSection }
+                if filteredWorkingCards.isEmpty {
+                    ContentUnavailableView("No Matches", systemImage: "magnifyingglass", description: Text("No working cards match BIN \(binFilter)"))
+                } else if viewMode == .tile {
                     workingTileGrid
                 } else {
                     cardsList
@@ -24,6 +40,11 @@ struct WorkingLoginsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Working Cards")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { withAnimation(.snappy) { showBINFilter.toggle() } } label: {
+                    Image(systemName: showBINFilter ? "number.circle.fill" : "number.circle")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 ViewModeToggle(mode: $viewMode, accentColor: .teal)
             }
@@ -58,7 +79,12 @@ struct WorkingLoginsView: View {
     private var exportBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
-            Text("\(vm.workingCards.count) working cards").font(.subheadline.bold())
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(filteredWorkingCards.count) working cards").font(.subheadline.bold())
+                if !binFilter.isEmpty {
+                    Text("BIN: \(binFilter)").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             Button { copyAllCards() } label: {
                 Label("Copy All", systemImage: "doc.on.doc")
@@ -71,9 +97,46 @@ struct WorkingLoginsView: View {
         .background(Color(.secondarySystemGroupedBackground))
     }
 
+    private var binFilterSection: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "number").foregroundStyle(.teal)
+                TextField("Filter by BIN (e.g. 411111)", text: $binFilter)
+                    .font(.system(.body, design: .monospaced))
+                    .keyboardType(.numberPad)
+                    .textInputAutocapitalization(.never)
+                if !binFilter.isEmpty {
+                    Button { withAnimation(.snappy) { binFilter = "" } } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color(.tertiarySystemGroupedBackground))
+            .clipShape(.rect(cornerRadius: 10))
+
+            if !availableBINs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        FilterChipSmall(title: "All", isSelected: binFilter.isEmpty) {
+                            withAnimation(.snappy) { binFilter = "" }
+                        }
+                        ForEach(availableBINs, id: \.self) { bin in
+                            FilterChipSmall(title: bin, isSelected: binFilter == bin) {
+                                withAnimation(.snappy) { binFilter = bin }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal).padding(.bottom, 8)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
     private var cardsList: some View {
         List {
-            ForEach(vm.workingCards) { card in
+            ForEach(filteredWorkingCards) { card in
                 let latestScreenshot = vm.screenshotsForCard(card.id).first?.image
                 WorkingCardRow(card: card, onCopy: { copyCard(card) }, screenshot: latestScreenshot)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -91,7 +154,7 @@ struct WorkingLoginsView: View {
     private var workingTileGrid: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                ForEach(vm.workingCards) { card in
+                ForEach(filteredWorkingCards) { card in
                     let latestScreenshot = vm.screenshotsForCard(card.id).first?.image
                     Button { copyCard(card) } label: {
                         ScreenshotTileView(
@@ -122,9 +185,9 @@ struct WorkingLoginsView: View {
     }
 
     private func copyAllCards() {
-        let text = vm.exportWorkingCards()
+        let text = filteredWorkingCards.map(\.pipeFormat).joined(separator: "\n")
         UIPasteboard.general.string = text
-        vm.log("Copied \(vm.workingCards.count) working cards to clipboard", level: .success)
+        vm.log("Copied \(filteredWorkingCards.count) working cards to clipboard", level: .success)
         withAnimation(.spring(duration: 0.3)) { showCopiedToast = true }
         Task { try? await Task.sleep(for: .seconds(1.5)); withAnimation { showCopiedToast = false } }
     }

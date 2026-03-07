@@ -47,7 +47,6 @@ struct AutomationSettingsView: View {
             templateQuickSection
             trueDetectionSection
             urlCalibrationSection
-            unifiedNetworkSection
             pageLoadingSection
             fieldDetectionSection
             cookieConsentSection
@@ -68,7 +67,6 @@ struct AutomationSettingsView: View {
             viewportWindowSection
             screenshotDebugSection
             concurrencySection
-            networkSection
             urlRotationSection
             blacklistSection
             flowAssignmentSection

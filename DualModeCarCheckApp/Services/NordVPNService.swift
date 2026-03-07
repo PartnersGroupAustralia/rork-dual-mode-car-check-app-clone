@@ -67,6 +67,18 @@ nonisolated struct NordCredentials: Codable, Sendable {
     let nordlynx_private_key: String?
 }
 
+nonisolated enum NordKeyProfile: String, CaseIterable, Codable, Sendable {
+    case nick = "Nick"
+    case poli = "Poli"
+
+    var hardcodedAccessKey: String {
+        switch self {
+        case .nick: "68b9f594ef76d1ec4ef82eb3e0c0a93dfe0ad4bd091a38965218d1f23340c78d"
+        case .poli: "e9f2ab075820d8ccc3362eadc4bbadb335571961002b5d5d606cbe4083680625"
+        }
+    }
+}
+
 @Observable
 @MainActor
 class NordVPNService {
@@ -79,14 +91,39 @@ class NordVPNService {
     var lastError: String?
     var recommendedServers: [NordVPNServer] = []
     var lastFetched: Date?
+    var activeKeyProfile: NordKeyProfile = .nick
 
     private let accessKeyPersistKey = "nordvpn_access_key_v1"
     private let privateKeyPersistKey = "nordvpn_private_key_v1"
+    private let keyProfilePersistKey = "nordvpn_key_profile_v1"
+    private let nickPrivateKeyPersistKey = "nordvpn_nick_private_key_v1"
+    private let poliPrivateKeyPersistKey = "nordvpn_poli_private_key_v1"
     private let logger = DebugLogger.shared
 
     init() {
-        accessKey = UserDefaults.standard.string(forKey: accessKeyPersistKey) ?? ""
-        privateKey = UserDefaults.standard.string(forKey: privateKeyPersistKey) ?? ""
+        if let profileRaw = UserDefaults.standard.string(forKey: keyProfilePersistKey),
+           let profile = NordKeyProfile(rawValue: profileRaw) {
+            activeKeyProfile = profile
+        }
+        accessKey = activeKeyProfile.hardcodedAccessKey
+        let pkKey = activeKeyProfile == .nick ? nickPrivateKeyPersistKey : poliPrivateKeyPersistKey
+        privateKey = UserDefaults.standard.string(forKey: pkKey) ?? ""
+    }
+
+    func switchProfile(_ profile: NordKeyProfile) {
+        let currentPKKey = activeKeyProfile == .nick ? nickPrivateKeyPersistKey : poliPrivateKeyPersistKey
+        if !privateKey.isEmpty {
+            UserDefaults.standard.set(privateKey, forKey: currentPKKey)
+        }
+        activeKeyProfile = profile
+        accessKey = profile.hardcodedAccessKey
+        UserDefaults.standard.set(profile.rawValue, forKey: keyProfilePersistKey)
+        UserDefaults.standard.set(accessKey, forKey: accessKeyPersistKey)
+        let newPKKey = profile == .nick ? nickPrivateKeyPersistKey : poliPrivateKeyPersistKey
+        privateKey = UserDefaults.standard.string(forKey: newPKKey) ?? ""
+        recommendedServers.removeAll()
+        lastError = nil
+        logger.log("NordVPN: switched to \(profile.rawValue) profile", category: .vpn, level: .success)
     }
 
     func setAccessKey(_ key: String) {
@@ -96,7 +133,8 @@ class NordVPNService {
 
     func setPrivateKey(_ key: String) {
         privateKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard.set(privateKey, forKey: privateKeyPersistKey)
+        let pkKey = activeKeyProfile == .nick ? nickPrivateKeyPersistKey : poliPrivateKeyPersistKey
+        UserDefaults.standard.set(privateKey, forKey: pkKey)
     }
 
     var hasAccessKey: Bool { !accessKey.isEmpty }

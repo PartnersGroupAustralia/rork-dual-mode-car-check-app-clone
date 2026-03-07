@@ -4,390 +4,115 @@ import UniformTypeIdentifiers
 struct PPSRNetworkSettingsView: View {
     @Bindable var vm: PPSRAutomationViewModel
     @State private var showDNSManager: Bool = false
-    @State private var showPPSRProxyImport: Bool = false
-    @State private var ppsrProxyBulkText: String = ""
-    @State private var ppsrProxyImportReport: ProxyRotationService.ImportReport?
-    @State private var isTestingPPSRProxies: Bool = false
-    @State private var showPPSRVPNFileImporter: Bool = false
-    @State private var showPPSRWGFileImporter: Bool = false
-    @State private var nordAccessKeyInput: String = ""
-    @State private var isEditingNordKey: Bool = false
+    @State private var showProxyImport: Bool = false
+    @State private var proxyBulkText: String = ""
+    @State private var proxyImportReport: ProxyRotationService.ImportReport?
+    @State private var isTestingProxies: Bool = false
+    @State private var showVPNFileImporter: Bool = false
+    @State private var showWGFileImporter: Bool = false
     @State private var isTestingVPNConfigs: Bool = false
+    @State private var isTestingWGConfigs: Bool = false
 
     private let proxyService = ProxyRotationService.shared
     private let nordService = NordVPNService.shared
 
     var body: some View {
         List {
-            unifiedNetworkBanner
             connectionModeSection
+            ignitionRegionSection
             nordVPNSection
+            endpointConfigSection
             endpointSection
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Networks")
+        .navigationTitle("Network Settings")
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
-        .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
-        .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls):
-                var imported = 0
-                for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    if let data = try? Data(contentsOf: url),
-                       let content = String(data: data, encoding: .utf8) {
-                        let fileName = url.lastPathComponent
-                        if let config = OpenVPNConfig.parse(fileName: fileName, content: content) {
-                            proxyService.importVPNConfig(config, for: .ppsr)
-                            imported += 1
-                        } else {
-                            vm.log("Failed to parse: \(fileName)", level: .warning)
-                        }
-                    }
-                }
-                if imported > 0 {
-                    vm.log("Imported \(imported) PPSR OpenVPN config(s)", level: .success)
-                }
-            case .failure(let error):
-                vm.log("VPN import error: \(error.localizedDescription)", level: .error)
-            }
+        .sheet(isPresented: $showProxyImport) { proxyImportSheet }
+        .fileImporter(isPresented: $showVPNFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
+            handleVPNFileImport(result)
         }
-        .fileImporter(isPresented: $showPPSRWGFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls):
-                var parsed: [WireGuardConfig] = []
-                var failedFiles: [String] = []
-                for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else {
-                        failedFiles.append(url.lastPathComponent)
-                        continue
-                    }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    if let data = try? Data(contentsOf: url),
-                       let content = String(data: data, encoding: .utf8) {
-                        let fileName = url.lastPathComponent
-                        let configs = WireGuardConfig.parseMultiple(fileName: fileName, content: content)
-                        if configs.isEmpty {
-                            if let single = WireGuardConfig.parse(fileName: fileName, content: content) {
-                                parsed.append(single)
-                            } else {
-                                failedFiles.append(fileName)
-                            }
-                        } else {
-                            parsed.append(contentsOf: configs)
-                        }
-                    } else {
-                        failedFiles.append(url.lastPathComponent)
-                    }
-                }
-                if !parsed.isEmpty {
-                    let report = proxyService.bulkImportWGConfigs(parsed, for: .ppsr)
-                    vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates", level: .success)
-                }
-                for name in failedFiles {
-                    vm.log("Failed to parse WireGuard: \(name)", level: .warning)
-                }
-            case .failure(let error):
-                vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
-            }
+        .fileImporter(isPresented: $showWGFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
+            handleWGFileImport(result)
         }
     }
 
-    // MARK: - Unified Network Banner
-
-    private var unifiedNetworkBanner: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: "network.badge.shield.half.filled")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Unified Network Active").font(.subheadline.bold())
-                    Text("Mode: \(proxyService.unifiedConnectionMode.label) \u{2022} Region: \(proxyService.networkRegion.label)")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                HStack(spacing: 4) {
-                    Image(systemName: proxyService.networkRegion.icon)
-                        .font(.caption)
-                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
-                    Text(proxyService.networkRegion.rawValue)
-                        .font(.system(.caption2, design: .monospaced, weight: .bold))
-                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
-                }
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background((proxyService.networkRegion == .usa ? Color.blue : .orange).opacity(0.12))
-                .clipShape(Capsule())
-            }
-        } header: {
-            Text("Network")
-        } footer: {
-            Text("Unified network configs are managed in Automation Config. Changes sync across all targets.")
-        }
-    }
-
-    // MARK: - Connection Mode
+    // MARK: - Connection Mode (Unified)
 
     private var connectionModeSection: some View {
-        let currentMode = proxyService.connectionMode(for: .ppsr)
-        let proxyList = proxyService.proxies(for: .ppsr)
-        return Section {
+        Section {
             Picker(selection: Binding(
-                get: { proxyService.connectionMode(for: .ppsr) },
-                set: { newMode in
-                    withAnimation(.spring(duration: 0.3)) {
-                        proxyService.setConnectionMode(newMode, for: .ppsr)
-                    }
-                    vm.log("PPSR switched to \(newMode.label) mode", level: .success)
-                }
+                get: { proxyService.unifiedConnectionMode },
+                set: { proxyService.setUnifiedConnectionMode($0) }
             )) {
                 ForEach(ConnectionMode.allCases, id: \.self) { mode in
                     Label(mode.label, systemImage: mode.icon).tag(mode)
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "bolt.shield.fill").foregroundStyle(.blue)
-                    Text("PPSR Connection")
+                    Image(systemName: "network.badge.shield.half.filled").foregroundStyle(.blue)
+                    Text("Connection Mode")
                 }
             }
             .pickerStyle(.menu)
-            .sensoryFeedback(.impact(weight: .medium), trigger: currentMode)
+            .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.unifiedConnectionMode)
 
-            if currentMode == .proxy {
-                HStack(spacing: 10) {
-                    Image(systemName: "network").foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("PPSR Proxies").font(.body)
-                        Text("\(proxyList.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    proxyStatusBadge(proxies: proxyList)
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.teal)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Shared Across All Modes").font(.subheadline.bold())
+                    Text("Joe Fortune, Ignition & PPSR use the same configs").font(.caption2).foregroundStyle(.secondary)
                 }
-
-                Button { showPPSRProxyImport = true } label: {
-                    Label("Import Proxies", systemImage: "doc.on.clipboard.fill")
-                }
-
-                if !proxyList.isEmpty {
-                    Button {
-                        guard !isTestingPPSRProxies else { return }
-                        isTestingPPSRProxies = true
-                        Task {
-                            vm.log("Testing all \(proxyList.count) PPSR proxies...")
-                            await proxyService.testAllProxies(target: .ppsr)
-                            let working = proxyService.proxies(for: .ppsr).filter(\.isWorking).count
-                            vm.log("PPSR proxy test: \(working)/\(proxyList.count) working", level: .success)
-                            isTestingPPSRProxies = false
-                        }
-                    } label: {
-                        HStack {
-                            Label("Test Proxies", systemImage: "antenna.radiowaves.left.and.right")
-                            if isTestingPPSRProxies { Spacer(); ProgressView().controlSize(.small) }
-                        }
-                    }
-                    .disabled(isTestingPPSRProxies)
-
-                    Button {
-                        let exported = proxyService.exportProxies(target: .ppsr)
-                        UIPasteboard.general.string = exported
-                        vm.log("Exported \(proxyList.count) PPSR proxies to clipboard", level: .success)
-                    } label: {
-                        Label("Export to Clipboard", systemImage: "doc.on.doc")
-                    }
-
-                    let deadCount = proxyList.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                    if deadCount > 0 {
-                        Button(role: .destructive) {
-                            proxyService.removeDead(target: .ppsr)
-                            vm.log("Removed \(deadCount) dead PPSR proxies")
-                        } label: {
-                            Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
-                        }
-                    }
-
-                    ForEach(proxyList) { proxy in
-                        ppsrProxyRow(proxy: proxy)
-                    }
-
-                    Button {
-                        proxyService.resetAllStatus(target: .ppsr)
-                        vm.log("Reset all PPSR proxy statuses")
-                    } label: {
-                        Label("Reset All Status", systemImage: "arrow.counterclockwise")
-                    }
-
-                    Button(role: .destructive) {
-                        proxyService.removeAll(target: .ppsr)
-                        vm.log("Cleared all PPSR proxies")
-                    } label: {
-                        Label("Clear All Proxies", systemImage: "trash")
-                    }
-                }
-            } else if currentMode == .openvpn {
-                let vpnList = proxyService.vpnConfigs(for: .ppsr)
-                HStack(spacing: 10) {
-                    Image(systemName: "shield.lefthalf.filled").foregroundStyle(.indigo)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("PPSR OpenVPN").font(.body)
-                        Text("\(vpnList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    let enabledCount = vpnList.filter(\.isEnabled).count
-                    if enabledCount > 0 {
-                        Text("\(enabledCount) active")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.indigo)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
-                    }
-                }
-
-                Button { showPPSRVPNFileImporter = true } label: {
-                    Label("Import .ovpn File", systemImage: "doc.badge.plus")
-                }
-
-                if !vpnList.isEmpty {
-                    ForEach(vpnList) { vpn in
-                        HStack(spacing: 8) {
-                            Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(vpn.isEnabled ? .indigo : .secondary)
-                                .onTapGesture {
-                                    proxyService.toggleVPNConfig(vpn, target: .ppsr, enabled: !vpn.isEnabled)
-                                }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(vpn.fileName)
-                                    .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
-                                HStack(spacing: 6) {
-                                    Text(vpn.displayString)
-                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
-                                    Text(vpn.statusLabel)
-                                        .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                        .foregroundStyle(vpn.isReachable ? .green : (vpn.lastTested != nil ? .red : .gray))
-                                }
-                            }
-                            Spacer()
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                proxyService.removeVPNConfig(vpn, target: .ppsr)
-                                vm.log("Removed VPN: \(vpn.fileName)")
-                            } label: { Label("Delete", systemImage: "trash") }
-                        }
-                    }
-
-                    Button(role: .destructive) {
-                        proxyService.clearAllVPNConfigs(target: .ppsr)
-                        vm.log("Cleared all PPSR OpenVPN configs")
-                    } label: {
-                        Label("Clear All Configs", systemImage: "trash")
-                    }
-                }
-            } else if currentMode == .wireguard {
-                let wgList = proxyService.wgConfigs(for: .ppsr)
-                HStack(spacing: 10) {
-                    Image(systemName: "lock.trianglebadge.exclamationmark.fill").foregroundStyle(.purple)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("PPSR WireGuard").font(.body)
-                        Text("\(wgList.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    let enabledCount = wgList.filter(\.isEnabled).count
-                    if enabledCount > 0 {
-                        Text("\(enabledCount) active")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.purple)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(Color.purple.opacity(0.12)).clipShape(Capsule())
-                    }
-                }
-
-                Button { showPPSRWGFileImporter = true } label: {
-                    Label("Import .conf Files", systemImage: "doc.badge.plus")
-                }
-
-                if !wgList.isEmpty {
-                    ForEach(wgList) { wg in
-                        HStack(spacing: 8) {
-                            Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(wg.isEnabled ? .purple : .secondary)
-                                .onTapGesture {
-                                    proxyService.toggleWGConfig(wg, target: .ppsr, enabled: !wg.isEnabled)
-                                }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(wg.fileName)
-                                    .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
-                                HStack(spacing: 6) {
-                                    Text(wg.displayString)
-                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
-                                    Text(wg.statusLabel)
-                                        .font(.system(.caption2, design: .monospaced, weight: .bold))
-                                        .foregroundStyle(wg.isReachable ? .green : (wg.lastTested != nil ? .red : .gray))
-                                }
-                            }
-                            Spacer()
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                proxyService.removeWGConfig(wg, target: .ppsr)
-                                vm.log("Removed WireGuard: \(wg.fileName)")
-                            } label: { Label("Delete", systemImage: "trash") }
-                        }
-                    }
-
-                    Button {
-                        Task { await proxyService.testAllWGConfigs(target: .ppsr) }
-                    } label: {
-                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-
-                    Button(role: .destructive) {
-                        proxyService.clearAllWGConfigs(target: .ppsr)
-                        vm.log("Cleared all PPSR WireGuard configs")
-                    } label: {
-                        Label("Clear All Configs", systemImage: "trash")
-                    }
-                }
-            } else {
-                let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
-                let total = PPSRDoHService.shared.managedProviders.count
-                HStack(spacing: 10) {
-                    Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("DoH DNS Rotation").font(.body)
-                        Text("\(enabled)/\(total) providers enabled · rotates each test").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                }
-
-                Button { showDNSManager = true } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "server.rack").foregroundStyle(.cyan)
-                        Text("Manage DNS Servers")
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                    }
-                }
+                Spacer()
+                Text(proxyService.unifiedConnectionMode.label)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(modeColor)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(modeColor.opacity(0.12)).clipShape(Capsule())
             }
         } header: {
             HStack {
-                Text("PPSR Connection")
+                Image(systemName: "network.badge.shield.half.filled")
+                Text("Unified Network")
                 Spacer()
-                Text(currentMode.label)
+                Text(proxyService.unifiedConnectionMode.label)
                     .font(.system(.caption2, design: .monospaced, weight: .bold))
-                    .foregroundStyle(ppsrConnectionModeColor(currentMode))
+                    .foregroundStyle(modeColor)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(ppsrConnectionModeColor(currentMode).opacity(0.12))
+                    .background(modeColor.opacity(0.12))
                     .clipShape(Capsule())
             }
         } footer: {
-            switch currentMode {
-            case .proxy: Text("PPSR uses SOCKS5 proxies for all connections.")
-            case .openvpn: Text("PPSR uses OpenVPN configs. Import .ovpn files to connect.")
-            case .wireguard: Text("PPSR uses WireGuard configs. Import NordVPN .conf files to connect.")
-            case .dns: Text("PPSR uses DoH DNS rotation for connections.")
+            Text("One set of network configs shared by Joe Fortune, Ignition and PPSR.")
+        }
+    }
+
+    // MARK: - Ignition Region Toggle
+
+    private var ignitionRegionSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: proxyService.networkRegion == .usa ? "flag.fill" : "globe.asia.australia.fill")
+                    .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ignition Region").font(.body)
+                    Text("Select USA or AU for Ignition proxy/VPN endpoints").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { proxyService.networkRegion },
+                    set: { proxyService.networkRegion = $0 }
+                )) {
+                    Text("USA").tag(NetworkRegion.usa)
+                    Text("AU").tag(NetworkRegion.au)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
             }
+            .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.networkRegion)
+        } header: {
+            Label("Ignition Region", systemImage: "globe")
+        } footer: {
+            Text("Only Ignition uses this region toggle. Joe Fortune and PPSR share the same configs regardless of region.")
         }
     }
 
@@ -399,9 +124,7 @@ struct PPSRNetworkSettingsView: View {
                 Image(systemName: "shield.checkered").foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("NordVPN Integration").font(.body)
-                    Text(nordService.hasAccessKey ? "Access key configured" : "No access key")
-                        .font(.caption2)
-                        .foregroundStyle(nordService.hasAccessKey ? .green : .secondary)
+                    Text("Profile: \(nordService.activeKeyProfile.rawValue)").font(.caption2).foregroundStyle(.green)
                 }
                 Spacer()
                 if nordService.hasPrivateKey {
@@ -409,161 +132,525 @@ struct PPSRNetworkSettingsView: View {
                 }
             }
 
-            if !nordService.hasAccessKey || isEditingNordKey {
-                HStack {
-                    SecureField("Nord Access Key", text: $nordAccessKeyInput)
-                        .font(.system(.caption, design: .monospaced))
-                        .textContentType(.password)
-                    Button("Save") {
-                        nordService.setAccessKey(nordAccessKeyInput)
-                        nordAccessKeyInput = ""
-                        isEditingNordKey = false
-                    }
-                    .disabled(nordAccessKeyInput.isEmpty)
-                    if isEditingNordKey {
-                        Button("Cancel") {
-                            nordAccessKeyInput = ""
-                            isEditingNordKey = false
-                        }
+            Picker(selection: Binding(
+                get: { nordService.activeKeyProfile },
+                set: { nordService.switchProfile($0) }
+            )) {
+                ForEach(NordKeyProfile.allCases, id: \.self) { profile in
+                    Text(profile.rawValue).tag(profile)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.2.fill").foregroundStyle(.indigo)
+                    Text("Access Key Profile")
+                }
+            }
+            .pickerStyle(.segmented)
+            .sensoryFeedback(.impact(weight: .medium), trigger: nordService.activeKeyProfile)
+
+            HStack(spacing: 10) {
+                Image(systemName: "key.horizontal.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Active Key").font(.caption.bold())
+                    Text(String(nordService.accessKey.prefix(12)) + "...")
+                        .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    }
                 }
-            } else {
+                Spacer()
+                Text(nordService.activeKeyProfile.rawValue)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.indigo)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
+            }
+
+            if !nordService.hasPrivateKey {
                 Button {
-                    isEditingNordKey = true
+                    Task { await nordService.fetchPrivateKey() }
                 } label: {
-                    Label("Change Access Key", systemImage: "key.horizontal")
-                }
-                .foregroundStyle(.orange)
-
-                if !nordService.hasPrivateKey {
-                    Button {
-                        Task { await nordService.fetchPrivateKey() }
-                    } label: {
-                        HStack {
-                            if nordService.isLoadingKey { ProgressView().controlSize(.small) }
-                            Label("Fetch WireGuard Private Key", systemImage: "key.fill")
-                        }
+                    HStack {
+                        if nordService.isLoadingKey { ProgressView().controlSize(.small) }
+                        Label("Fetch WireGuard Private Key", systemImage: "key.fill")
                     }
-                    .disabled(nordService.isLoadingKey)
+                }
+                .disabled(nordService.isLoadingKey)
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "key.fill").foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Private Key").font(.caption.bold())
+                        Text(String(nordService.privateKey.prefix(12)) + "...")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("Ready").font(.caption2.bold()).foregroundStyle(.green)
                 }
 
                 Button {
-                    Task { await nordService.fetchRecommendedServers(limit: 10, technology: "openvpn_tcp") }
+                    Task { await nordService.fetchPrivateKey() }
+                } label: {
+                    HStack {
+                        if nordService.isLoadingKey { ProgressView().controlSize(.small) }
+                        Label("Re-fetch Private Key", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(nordService.isLoadingKey)
+            }
+
+            Button {
+                Task { await nordService.fetchRecommendedServers(limit: 10, technology: "openvpn_tcp") }
+            } label: {
+                HStack {
+                    if nordService.isLoadingServers { ProgressView().controlSize(.small) }
+                    Label("Fetch TCP Servers", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .disabled(nordService.isLoadingServers)
+
+            if nordService.hasPrivateKey {
+                Button {
+                    Task { await nordService.fetchRecommendedServers(limit: 10, technology: "wireguard_udp") }
                 } label: {
                     HStack {
                         if nordService.isLoadingServers { ProgressView().controlSize(.small) }
-                        Label("Fetch TCP Servers", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Fetch WireGuard Servers", systemImage: "lock.fill")
                     }
                 }
                 .disabled(nordService.isLoadingServers)
+            }
 
-                if !nordService.recommendedServers.isEmpty {
-                    Button {
-                        guard !nordService.isDownloadingOVPN else { return }
-                        Task {
-                            let result = await nordService.downloadAllTCPConfigs(for: nordService.recommendedServers, target: .ppsr)
-                            vm.log("NordVPN TCP: \(result.imported) imported, \(result.failed) failed \u{2192} PPSR", level: result.imported > 0 ? .success : .error)
+            if !nordService.recommendedServers.isEmpty {
+                Button {
+                    guard !nordService.isDownloadingOVPN else { return }
+                    Task {
+                        let result = await nordService.downloadAllTCPConfigs(for: nordService.recommendedServers, target: .joe)
+                        proxyService.syncVPNConfigsAcrossTargets()
+                        vm.log("NordVPN TCP: \(result.imported) imported, \(result.failed) failed → all targets", level: result.imported > 0 ? .success : .error)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if nordService.isDownloadingOVPN {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.down.doc.fill").foregroundStyle(.indigo)
                         }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Download All TCP .ovpn").font(.subheadline.bold())
+                            Text(nordService.isDownloadingOVPN ? "Downloading \(nordService.ovpnDownloadProgress)..." : "\(nordService.recommendedServers.count) servers available")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+                .disabled(nordService.isDownloadingOVPN)
+
+                if nordService.hasPrivateKey {
+                    Button {
+                        var imported = 0
+                        for server in nordService.recommendedServers {
+                            if let wg = nordService.generateWireGuardConfig(from: server) {
+                                proxyService.importWGConfig(wg, for: .joe)
+                                imported += 1
+                            }
+                        }
+                        proxyService.syncWGConfigsAcrossTargets()
+                        vm.log("Generated \(imported) WireGuard configs → all targets", level: imported > 0 ? .success : .error)
                     } label: {
                         HStack(spacing: 10) {
-                            if nordService.isDownloadingOVPN {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Image(systemName: "arrow.down.doc.fill").foregroundStyle(.indigo)
-                            }
+                            Image(systemName: "lock.shield.fill").foregroundStyle(.purple)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Download All TCP .ovpn \u{2192} PPSR").font(.subheadline.bold())
-                                Text(nordService.isDownloadingOVPN ? "Downloading \(nordService.ovpnDownloadProgress)..." : "\(nordService.recommendedServers.count) servers available")
-                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("Generate All WireGuard").font(.subheadline.bold())
+                                Text("\(nordService.recommendedServers.count) servers → WG configs").font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer()
-                        }
-                    }
-                    .disabled(nordService.isDownloadingOVPN)
-
-                    ForEach(nordService.recommendedServers, id: \.id) { server in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(server.hostname)
-                                    .font(.system(.caption, design: .monospaced, weight: .medium))
-                                    .lineLimit(1)
-                                HStack(spacing: 6) {
-                                    if let city = server.city {
-                                        Text(city).font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    Text("Load: \(server.load)%")
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(server.load < 30 ? .green : (server.load < 70 ? .orange : .red))
-                                }
-                            }
-                            Spacer()
-                            Menu {
-                                Button {
-                                    Task {
-                                        if let config = await nordService.downloadOVPNConfig(from: server, proto: .tcp) {
-                                            proxyService.importVPNConfig(config, for: .ppsr)
-                                            vm.log("Imported TCP .ovpn [PPSR]: \(server.hostname)", level: .success)
-                                        } else {
-                                            vm.log("Failed to download .ovpn: \(server.hostname)", level: .error)
-                                        }
-                                    }
-                                } label: { Label("TCP .ovpn \u{2192} PPSR", systemImage: "shield.lefthalf.filled") }
-                                if nordService.hasPrivateKey, let _ = server.publicKey {
-                                    Divider()
-                                    Button {
-                                        if let wgConfig = nordService.generateWireGuardConfig(from: server) {
-                                            proxyService.importWGConfig(wgConfig, for: .ppsr)
-                                            vm.log("Imported WG [PPSR]: \(server.hostname)", level: .success)
-                                        }
-                                    } label: { Label("WG \u{2192} PPSR", systemImage: "lock.fill") }
-                                }
-                            } label: {
-                                Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
-                            }
                         }
                     }
                 }
 
-                Button(role: .destructive) {
-                    nordService.setAccessKey("")
-                    nordService.setPrivateKey("")
-                    nordService.recommendedServers.removeAll()
-                } label: {
-                    Label("Remove Access Key", systemImage: "trash")
+                ForEach(nordService.recommendedServers, id: \.id) { server in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(server.hostname)
+                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                if let city = server.city {
+                                    Text(city).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Text("Load: \(server.load)%")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(server.load < 30 ? .green : (server.load < 70 ? .orange : .red))
+                            }
+                        }
+                        Spacer()
+                        Menu {
+                            Button {
+                                Task {
+                                    if let config = await nordService.downloadOVPNConfig(from: server, proto: .tcp) {
+                                        proxyService.importVPNConfig(config, for: .joe)
+                                        proxyService.syncVPNConfigsAcrossTargets()
+                                        vm.log("Imported TCP .ovpn: \(server.hostname) → all targets", level: .success)
+                                    }
+                                }
+                            } label: { Label("TCP .ovpn → All", systemImage: "shield.lefthalf.filled") }
+                            if nordService.hasPrivateKey, server.publicKey != nil {
+                                Divider()
+                                Button {
+                                    if let wgConfig = nordService.generateWireGuardConfig(from: server) {
+                                        proxyService.importWGConfig(wgConfig, for: .joe)
+                                        proxyService.syncWGConfigsAcrossTargets()
+                                        vm.log("Imported WG: \(server.hostname) → all targets", level: .success)
+                                    }
+                                } label: { Label("WireGuard → All", systemImage: "lock.fill") }
+                            }
+                        } label: {
+                            Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
+                        }
+                    }
                 }
             }
 
             if let error = nordService.lastError {
                 Text(error).font(.caption2).foregroundStyle(.red)
             }
+        } header: {
+            HStack {
+                Text("NordVPN")
+                Spacer()
+                Text(nordService.activeKeyProfile.rawValue)
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.indigo)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.indigo.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        } footer: {
+            Text("Toggle between Nick and Poli access keys. Fetched servers and configs are shared across all targets.")
+        }
+    }
 
-            let currentMode = proxyService.connectionMode(for: .ppsr)
-            if currentMode == .openvpn {
-                let vpnList = proxyService.vpnConfigs(for: .ppsr)
-                if !vpnList.isEmpty {
-                    Button {
-                        guard !isTestingVPNConfigs else { return }
-                        isTestingVPNConfigs = true
-                        Task {
-                            await proxyService.testAllVPNConfigs(target: .ppsr)
-                            let reachable = proxyService.vpnConfigs(for: .ppsr).filter(\.isReachable).count
-                            vm.log("OpenVPN test: \(reachable)/\(vpnList.count) reachable", level: .success)
-                            isTestingVPNConfigs = false
-                        }
-                    } label: {
-                        HStack {
-                            Label("Test All OpenVPN", systemImage: "antenna.radiowaves.left.and.right")
-                            if isTestingVPNConfigs { Spacer(); ProgressView().controlSize(.small) }
-                        }
+    // MARK: - Endpoint Config (Proxy/VPN/WG/DNS)
+
+    @ViewBuilder
+    private var endpointConfigSection: some View {
+        switch proxyService.unifiedConnectionMode {
+        case .proxy: proxySection
+        case .openvpn: openVPNSection
+        case .wireguard: wireGuardSection
+        case .dns: dnsSection
+        }
+    }
+
+    private var proxySection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "network").foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SOCKS5 Proxies").font(.body)
+                    Text("\(proxyService.unifiedProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                proxyBadge
+            }
+
+            Button { showProxyImport = true } label: {
+                Label("Import Proxies", systemImage: "doc.on.clipboard.fill")
+            }
+
+            if !proxyService.unifiedProxies.isEmpty {
+                Button {
+                    guard !isTestingProxies else { return }
+                    isTestingProxies = true
+                    Task {
+                        vm.log("Testing all \(proxyService.unifiedProxies.count) proxies...")
+                        await proxyService.testAllUnifiedProxies()
+                        let working = proxyService.unifiedProxies.filter(\.isWorking).count
+                        vm.log("Proxy test: \(working)/\(proxyService.unifiedProxies.count) working", level: .success)
+                        isTestingProxies = false
                     }
-                    .disabled(isTestingVPNConfigs)
+                } label: {
+                    HStack {
+                        Label("Test All Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingProxies { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingProxies)
+
+                Button {
+                    let exported = proxyService.exportProxies(target: .joe)
+                    UIPasteboard.general.string = exported
+                    vm.log("Exported \(proxyService.unifiedProxies.count) proxies to clipboard", level: .success)
+                } label: {
+                    Label("Export to Clipboard", systemImage: "doc.on.doc")
+                }
+
+                let deadCount = proxyService.unifiedProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                if deadCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeDead(forIgnition: false)
+                        proxyService.syncProxiesAcrossTargets()
+                        vm.log("Removed \(deadCount) dead proxies")
+                    } label: {
+                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedProxies()
+                    vm.log("Cleared all proxies")
+                } label: {
+                    Label("Clear All Proxies", systemImage: "trash")
                 }
             }
         } header: {
-            Text("NordVPN")
+            Label("SOCKS5 Proxies", systemImage: "network")
+        }
+    }
+
+    @ViewBuilder
+    private var proxyBadge: some View {
+        let proxies = proxyService.unifiedProxies
+        if !proxies.isEmpty {
+            HStack(spacing: 4) {
+                let working = proxies.filter(\.isWorking).count
+                if working > 0 {
+                    Text("\(working) ok")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.green)
+                }
+                let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                if dead > 0 {
+                    Text("\(dead) dead")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Color(.tertiarySystemFill)).clipShape(Capsule())
+        }
+    }
+
+    private var openVPNSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "shield.lefthalf.filled").foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OpenVPN Configs").font(.body)
+                    Text("\(proxyService.unifiedVPNConfigs.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                let enabledCount = proxyService.unifiedVPNConfigs.filter(\.isEnabled).count
+                if enabledCount > 0 {
+                    Text("\(enabledCount) active")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.indigo)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
+                }
+            }
+
+            Button { showVPNFileImporter = true } label: {
+                Label("Import .ovpn Files", systemImage: "doc.badge.plus")
+            }
+
+            if !proxyService.unifiedVPNConfigs.isEmpty {
+                Button {
+                    guard !isTestingVPNConfigs else { return }
+                    isTestingVPNConfigs = true
+                    Task {
+                        vm.log("Testing \(proxyService.unifiedVPNConfigs.count) OpenVPN configs...")
+                        await proxyService.testAllUnifiedVPNConfigs()
+                        let reachable = proxyService.unifiedVPNConfigs.filter(\.isReachable).count
+                        vm.log("OpenVPN test: \(reachable)/\(proxyService.unifiedVPNConfigs.count) reachable", level: .success)
+                        isTestingVPNConfigs = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test All OpenVPN", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingVPNConfigs { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingVPNConfigs)
+
+                ForEach(proxyService.unifiedVPNConfigs) { vpn in
+                    HStack(spacing: 8) {
+                        Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(vpn.isEnabled ? .indigo : .secondary)
+                            .onTapGesture {
+                                proxyService.toggleVPNConfig(vpn, target: .joe, enabled: !vpn.isEnabled)
+                                proxyService.syncVPNConfigsAcrossTargets()
+                            }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(vpn.fileName)
+                                .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(vpn.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                Text(vpn.statusLabel)
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(vpn.isReachable ? .green : (vpn.lastTested != nil ? .red : .gray))
+                                if let latency = vpn.lastLatencyMs {
+                                    Text("\(latency)ms")
+                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            proxyService.removeVPNConfig(vpn, target: .joe)
+                            proxyService.syncVPNConfigsAcrossTargets()
+                            vm.log("Removed VPN: \(vpn.fileName)")
+                        } label: { Label("Delete", systemImage: "trash") }
+                    }
+                }
+
+                let unreachableCount = proxyService.unifiedVPNConfigs.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                if unreachableCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeUnreachableVPNConfigs(target: .joe)
+                        proxyService.syncVPNConfigsAcrossTargets()
+                        vm.log("Removed \(unreachableCount) unreachable OpenVPN configs")
+                    } label: {
+                        Label("Remove \(unreachableCount) Unreachable", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedVPNConfigs()
+                    vm.log("Cleared all OpenVPN configs")
+                } label: {
+                    Label("Clear All Configs", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label("OpenVPN", systemImage: "shield.lefthalf.filled")
+        }
+    }
+
+    private var wireGuardSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.trianglebadge.exclamationmark.fill").foregroundStyle(.purple)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("WireGuard Configs").font(.body)
+                    Text("\(proxyService.unifiedWGConfigs.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                let enabledCount = proxyService.unifiedWGConfigs.filter(\.isEnabled).count
+                if enabledCount > 0 {
+                    Text("\(enabledCount) active")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.12)).clipShape(Capsule())
+                }
+            }
+
+            Button { showWGFileImporter = true } label: {
+                Label("Import .conf Files", systemImage: "doc.badge.plus")
+            }
+
+            if !proxyService.unifiedWGConfigs.isEmpty {
+                Button {
+                    guard !isTestingWGConfigs else { return }
+                    isTestingWGConfigs = true
+                    Task {
+                        vm.log("Testing \(proxyService.unifiedWGConfigs.count) WireGuard configs...")
+                        await proxyService.testAllUnifiedWGConfigs()
+                        let reachable = proxyService.unifiedWGConfigs.filter(\.isReachable).count
+                        vm.log("WireGuard test: \(reachable)/\(proxyService.unifiedWGConfigs.count) reachable", level: .success)
+                        isTestingWGConfigs = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingWGConfigs { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingWGConfigs)
+
+                ForEach(proxyService.unifiedWGConfigs) { wg in
+                    HStack(spacing: 8) {
+                        Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(wg.isEnabled ? .purple : .secondary)
+                            .onTapGesture {
+                                proxyService.toggleWGConfig(wg, target: .joe, enabled: !wg.isEnabled)
+                                proxyService.syncWGConfigsAcrossTargets()
+                            }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(wg.fileName)
+                                .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(wg.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                Text(wg.statusLabel)
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(wg.isReachable ? .green : (wg.lastTested != nil ? .red : .gray))
+                            }
+                        }
+                        Spacer()
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            proxyService.removeWGConfig(wg, target: .joe)
+                            proxyService.syncWGConfigsAcrossTargets()
+                            vm.log("Removed WireGuard: \(wg.fileName)")
+                        } label: { Label("Delete", systemImage: "trash") }
+                    }
+                }
+
+                let unreachableWGCount = proxyService.unifiedWGConfigs.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                if unreachableWGCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeUnreachableWGConfigs(target: .joe)
+                        proxyService.syncWGConfigsAcrossTargets()
+                        vm.log("Removed \(unreachableWGCount) unreachable WireGuard configs")
+                    } label: {
+                        Label("Remove \(unreachableWGCount) Unreachable", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedWGConfigs()
+                    vm.log("Cleared all WireGuard configs")
+                } label: {
+                    Label("Clear All Configs", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label("WireGuard", systemImage: "lock.trianglebadge.exclamationmark.fill")
+        }
+    }
+
+    private var dnsSection: some View {
+        Section {
+            let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+            let total = PPSRDoHService.shared.managedProviders.count
+            HStack(spacing: 10) {
+                Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DoH DNS Rotation").font(.body)
+                    Text("\(enabled)/\(total) providers enabled · rotates each request").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            }
+
+            Button { showDNSManager = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack").foregroundStyle(.cyan)
+                    Text("Manage DNS Servers")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Label("DNS-over-HTTPS", systemImage: "lock.shield.fill")
         } footer: {
-            Text("Fetches recommended TCP OpenVPN servers from NordVPN and downloads real .ovpn config files for import.")
+            Text("DNS-over-HTTPS rotation is shared across all targets.")
         }
     }
 
@@ -629,6 +716,17 @@ struct PPSRNetworkSettingsView: View {
         }
     }
 
+    // MARK: - Helpers
+
+    private var modeColor: Color {
+        switch proxyService.unifiedConnectionMode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        }
+    }
+
     private var endpointColor: Color {
         switch vm.connectionStatus {
         case .connected: .green; case .connecting: .orange; case .disconnected: .secondary; case .error: .red
@@ -648,108 +746,111 @@ struct PPSRNetworkSettingsView: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - File Handlers
 
-    private func ppsrProxyRow(proxy: ProxyConfig) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(proxyStatusColor(proxy))
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(proxy.displayString)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(proxy.statusLabel)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(proxyStatusColor(proxy))
-                    if let date = proxy.lastTested {
-                        Text(date, style: .relative)
-                            .font(.caption2).foregroundStyle(.quaternary)
+    private func handleVPNFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            var imported = 0
+            for url in urls {
+                guard url.startAccessingSecurityScopedResource() else { continue }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url),
+                   let content = String(data: data, encoding: .utf8) {
+                    let fileName = url.lastPathComponent
+                    if let config = OpenVPNConfig.parse(fileName: fileName, content: content) {
+                        proxyService.importUnifiedVPNConfig(config)
+                        imported += 1
+                    } else {
+                        vm.log("Failed to parse: \(fileName)", level: .warning)
                     }
                 }
             }
-            Spacer()
-        }
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) { proxyService.removeProxy(proxy, target: .ppsr) } label: { Label("Delete", systemImage: "trash") }
-        }
-    }
-
-    private func proxyStatusBadge(proxies: [ProxyConfig]) -> some View {
-        Group {
-            if !proxies.isEmpty {
-                HStack(spacing: 4) {
-                    let working = proxies.filter(\.isWorking).count
-                    if working > 0 {
-                        Text("\(working) ok")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.green)
-                    }
-                    let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
-                    if dead > 0 {
-                        Text("\(dead) dead")
-                            .font(.system(.caption2, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.red)
-                    }
-                }
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(Color(.tertiarySystemFill)).clipShape(Capsule())
+            if imported > 0 {
+                vm.log("Imported \(imported) OpenVPN config(s) → all targets", level: .success)
             }
+        case .failure(let error):
+            vm.log("VPN import error: \(error.localizedDescription)", level: .error)
         }
     }
 
-    private func proxyStatusColor(_ proxy: ProxyConfig) -> Color {
-        if proxy.lastTested == nil { return .gray }
-        return proxy.isWorking ? .green : .red
-    }
-
-    private func ppsrConnectionModeColor(_ mode: ConnectionMode) -> Color {
-        switch mode {
-        case .proxy: .blue
-        case .openvpn: .indigo
-        case .wireguard: .purple
-        case .dns: .cyan
+    private func handleWGFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            var parsed: [WireGuardConfig] = []
+            var failedFiles: [String] = []
+            for url in urls {
+                guard url.startAccessingSecurityScopedResource() else {
+                    failedFiles.append(url.lastPathComponent)
+                    continue
+                }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url),
+                   let content = String(data: data, encoding: .utf8) {
+                    let fileName = url.lastPathComponent
+                    let configs = WireGuardConfig.parseMultiple(fileName: fileName, content: content)
+                    if configs.isEmpty {
+                        if let single = WireGuardConfig.parse(fileName: fileName, content: content) {
+                            parsed.append(single)
+                        } else {
+                            failedFiles.append(fileName)
+                        }
+                    } else {
+                        parsed.append(contentsOf: configs)
+                    }
+                } else {
+                    failedFiles.append(url.lastPathComponent)
+                }
+            }
+            if !parsed.isEmpty {
+                let report = proxyService.importUnifiedWGConfigs(parsed)
+                vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates → all targets", level: .success)
+            }
+            for name in failedFiles {
+                vm.log("Failed to parse WireGuard: \(name)", level: .warning)
+            }
+        case .failure(let error):
+            vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
         }
     }
 
     // MARK: - Sheets
 
-    private var ppsrProxyImportSheet: some View {
+    private var proxyImportSheet: some View {
         NavigationStack {
             VStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Circle().fill(.blue).frame(width: 10, height: 10)
-                        Text("Import PPSR SOCKS5 Proxies").font(.headline)
+                        Text("Import SOCKS5 Proxies").font(.headline)
                     }
-                    Text("Paste proxies in any common format, one per line.").font(.caption).foregroundStyle(.secondary)
+                    Text("Imported proxies are synced across all targets.").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 8) {
                     Button {
                         if let clipboard = UIPasteboard.general.string, !clipboard.isEmpty {
-                            ppsrProxyBulkText = clipboard
+                            proxyBulkText = clipboard
                         }
                     } label: {
                         Label("Paste from Clipboard", systemImage: "doc.on.clipboard").font(.caption)
                     }
                     .buttonStyle(.bordered).controlSize(.small)
                     Spacer()
-                    let lineCount = ppsrProxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                    let lineCount = proxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
                     if lineCount > 0 {
                         Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 }
 
-                TextEditor(text: $ppsrProxyBulkText)
+                TextEditor(text: $proxyBulkText)
                     .font(.system(.callout, design: .monospaced))
                     .scrollContentBackground(.hidden).padding(10)
                     .background(Color(.tertiarySystemGroupedBackground))
                     .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 200)
                     .overlay(alignment: .topLeading) {
-                        if ppsrProxyBulkText.isEmpty {
+                        if proxyBulkText.isEmpty {
                             Text("Paste SOCKS5 proxies here...\n\n127.0.0.1:1080\nuser:pass@proxy.com:9050")
                                 .font(.system(.callout, design: .monospaced))
                                 .foregroundStyle(.quaternary)
@@ -758,7 +859,7 @@ struct PPSRNetworkSettingsView: View {
                         }
                     }
 
-                if let report = ppsrProxyImportReport {
+                if let report = proxyImportReport {
                     HStack(spacing: 12) {
                         if report.added > 0 {
                             Label("\(report.added) added", systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(.green)
@@ -775,32 +876,32 @@ struct PPSRNetworkSettingsView: View {
                 Spacer()
             }
             .padding()
-            .navigationTitle("PPSR Proxies").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Import Proxies").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        showPPSRProxyImport = false
-                        ppsrProxyBulkText = ""
-                        ppsrProxyImportReport = nil
+                        showProxyImport = false
+                        proxyBulkText = ""
+                        proxyImportReport = nil
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Import") {
-                        let report = proxyService.bulkImportSOCKS5(ppsrProxyBulkText, for: .ppsr)
-                        ppsrProxyImportReport = report
+                        let report = proxyService.importUnifiedProxy(proxyBulkText)
+                        proxyImportReport = report
                         if report.added > 0 {
-                            vm.log("Imported \(report.added) PPSR SOCKS5 proxies", level: .success)
+                            vm.log("Imported \(report.added) SOCKS5 proxies → all targets", level: .success)
                         }
-                        ppsrProxyBulkText = ""
+                        proxyBulkText = ""
                         if report.failed.isEmpty && report.added > 0 {
                             Task {
                                 try? await Task.sleep(for: .seconds(1.5))
-                                showPPSRProxyImport = false
-                                ppsrProxyImportReport = nil
+                                showProxyImport = false
+                                proxyImportReport = nil
                             }
                         }
                     }
-                    .disabled(ppsrProxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(proxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

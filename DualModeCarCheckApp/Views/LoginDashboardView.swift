@@ -2,6 +2,18 @@ import SwiftUI
 
 struct LoginDashboardView: View {
     @Bindable var vm: PPSRAutomationViewModel
+    @State private var binFilter: String = ""
+    @State private var showBINFilter: Bool = false
+
+    private var filteredUntestedCards: [PPSRCard] {
+        let cards = vm.untestedCards
+        if binFilter.isEmpty { return cards }
+        return cards.filter { $0.binPrefix.hasPrefix(binFilter) }
+    }
+
+    private var availableQueuedBINs: [String] {
+        Set(vm.untestedCards.map(\.binPrefix)).sorted()
+    }
 
     var body: some View {
         ScrollView {
@@ -20,7 +32,7 @@ struct LoginDashboardView: View {
                 testControlsCard
                 statsRow
                 if !vm.untestedCards.isEmpty {
-                    cardSection(title: "Queued — Untested", cards: Array(vm.untestedCards.prefix(50)), color: .secondary, icon: "clock.fill")
+                    queuedCardsSection
                 }
                 if !vm.testingCards.isEmpty {
                     cardSection(title: "Testing Now", cards: vm.testingCards, color: .teal, icon: "arrow.triangle.2.circlepath")
@@ -37,6 +49,13 @@ struct LoginDashboardView: View {
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Dashboard")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { withAnimation(.snappy) { showBINFilter.toggle() } } label: {
+                    Image(systemName: showBINFilter ? "number.circle.fill" : "number.circle")
+                }
+            }
+        }
         .task {
             await vm.testConnection()
         }
@@ -206,6 +225,67 @@ struct LoginDashboardView: View {
             MiniStat(value: "\(vm.untestedCards.count)", label: "Queued", color: .secondary, icon: "clock")
             MiniStat(value: "\(vm.deadCards.count)", label: "Dead", color: .red, icon: "xmark.circle.fill")
             MiniStat(value: "\(vm.cards.count)", label: "Total", color: .blue, icon: "creditcard.fill")
+        }
+    }
+
+    private var queuedCardsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("Queued \u{2014} Untested")
+                    .font(.headline)
+                Spacer()
+                Text("\(filteredUntestedCards.count)")
+                    .font(.system(.caption, design: .monospaced, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+                    .foregroundStyle(.secondary)
+            }
+
+            if showBINFilter {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "number").foregroundStyle(.teal)
+                        TextField("Filter by BIN", text: $binFilter)
+                            .font(.system(.body, design: .monospaced))
+                            .keyboardType(.numberPad)
+                        if !binFilter.isEmpty {
+                            Button { withAnimation(.snappy) { binFilter = "" } } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10))
+
+                    if !availableQueuedBINs.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                FilterChipSmall(title: "All", isSelected: binFilter.isEmpty) {
+                                    withAnimation(.snappy) { binFilter = "" }
+                                }
+                                ForEach(availableQueuedBINs, id: \.self) { bin in
+                                    FilterChipSmall(title: bin, isSelected: binFilter == bin) {
+                                        withAnimation(.snappy) { binFilter = bin }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ForEach(Array(filteredUntestedCards.prefix(50))) { card in
+                NavigationLink(value: card.id) {
+                    CardRow(card: card, accentColor: .secondary)
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 

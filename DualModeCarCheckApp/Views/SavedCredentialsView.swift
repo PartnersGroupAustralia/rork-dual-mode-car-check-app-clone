@@ -10,6 +10,7 @@ struct SavedCredentialsView: View {
     @State private var filterBrand: CardBrand? = nil
     @State private var filterStatus: CardStatus? = nil
     @State private var filterCountry: String? = nil
+    @State private var filterBIN: String? = nil
     @State private var showFilters: Bool = false
     @State private var viewMode: ViewMode = .list
     @State private var showFileImporter: Bool = false
@@ -32,11 +33,16 @@ struct SavedCredentialsView: View {
         if let brand = filterBrand { result = result.filter { $0.brand == brand } }
         if let status = filterStatus { result = result.filter { $0.status == status } }
         if let country = filterCountry, !country.isEmpty { result = result.filter { $0.binData?.country == country } }
+        if let bin = filterBIN, !bin.isEmpty { result = result.filter { $0.binPrefix == bin } }
         return vm.applySortOrder(result)
     }
 
     private var availableCountries: [String] {
         Set(vm.cards.compactMap { $0.binData?.country }.filter { !$0.isEmpty }).sorted()
+    }
+
+    private var availableBINs: [String] {
+        Set(vm.cards.filter { $0.status != .dead }.map(\.binPrefix)).sorted()
     }
 
     private var availableBrands: [CardBrand] {
@@ -175,9 +181,9 @@ struct SavedCredentialsView: View {
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(Color(.tertiarySystemFill)).clipShape(Capsule())
 
-                if filterBrand != nil || filterStatus != nil || filterCountry != nil {
+                if filterBrand != nil || filterStatus != nil || filterCountry != nil || filterBIN != nil {
                     Button {
-                        withAnimation(.snappy) { filterBrand = nil; filterStatus = nil; filterCountry = nil }
+                        withAnimation(.snappy) { filterBrand = nil; filterStatus = nil; filterCountry = nil; filterBIN = nil }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "xmark").font(.caption2)
@@ -223,6 +229,19 @@ struct SavedCredentialsView: View {
                             FilterChipSmall(title: "All", isSelected: filterCountry == nil) { withAnimation(.snappy) { filterCountry = nil } }
                             ForEach(availableCountries, id: \.self) { country in
                                 FilterChipSmall(title: country, isSelected: filterCountry == country) { withAnimation(.snappy) { filterCountry = country } }
+                            }
+                        }
+                    }
+                }
+            }
+            if availableBINs.count > 1 {
+                HStack(spacing: 8) {
+                    Text("BIN").font(.caption.bold()).foregroundStyle(.secondary).frame(width: 56, alignment: .leading)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            FilterChipSmall(title: "All", isSelected: filterBIN == nil) { withAnimation(.snappy) { filterBIN = nil } }
+                            ForEach(availableBINs, id: \.self) { bin in
+                                FilterChipSmall(title: bin, isSelected: filterBIN == bin) { withAnimation(.snappy) { filterBIN = bin } }
                             }
                         }
                     }
