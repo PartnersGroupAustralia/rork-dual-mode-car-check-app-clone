@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 struct AutomationSettingsView: View {
     @Bindable var vm: LoginViewModel
@@ -11,6 +13,21 @@ struct AutomationSettingsView: View {
     @State private var showSuccessMarkerEditor: Bool = false
     @State private var showTerminalKeywordEditor: Bool = false
     @State private var showErrorBannerEditor: Bool = false
+    @State private var showCalibrationSheet: Bool = false
+    @State private var calibrationURL: String = ""
+    @State private var isAutoCalibrating: Bool = false
+    @State private var autoCalibrationLog: [String] = []
+    @State private var showProxyImport: Bool = false
+    @State private var proxyBulkText: String = ""
+    @State private var proxyImportReport: ProxyRotationService.ImportReport?
+    @State private var isTestingProxies: Bool = false
+    @State private var isTestingVPNConfigs: Bool = false
+    @State private var isTestingWGConfigs: Bool = false
+    @State private var showVPNFileImporter: Bool = false
+    @State private var showWGFileImporter: Bool = false
+
+    private let calibrationService = LoginCalibrationService.shared
+    private let proxyService = ProxyRotationService.shared
 
     private var accentColor: Color {
         vm.isIgnitionMode ? .orange : .green
@@ -29,6 +46,8 @@ struct AutomationSettingsView: View {
             autoSaveSection
             templateQuickSection
             trueDetectionSection
+            urlCalibrationSection
+            unifiedNetworkSection
             pageLoadingSection
             fieldDetectionSection
             cookieConsentSection
@@ -136,6 +155,22 @@ struct AutomationSettingsView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showCalibrationSheet) {
+            if !calibrationURL.isEmpty {
+                LoginCalibrationView(urlString: calibrationURL) { cal in
+                    vm.log("Calibration saved for \(cal.urlPattern)", level: .success)
+                }
+            }
+        }
+        .sheet(isPresented: $showProxyImport) {
+            unifiedProxyImportSheet
+        }
+        .fileImporter(isPresented: $showVPNFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
+            handleVPNFileImport(result)
+        }
+        .fileImporter(isPresented: $showWGFileImporter, allowedContentTypes: [.data, .plainText], allowsMultipleSelection: true) { result in
+            handleWGFileImport(result)
         }
     }
 
@@ -298,6 +333,670 @@ struct AutomationSettingsView: View {
             }
         } footer: {
             Text("Triple-Wait → #email → #login-password → Triple-Click #login-submit. Success = balance/wallet/my account/logout. No DOM guessing.")
+        }
+    }
+
+    // MARK: - URL Calibration (True Detection)
+
+    private var urlCalibrationSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "target").foregroundStyle(accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("URL Calibration").font(.body)
+                    Text("\(calibrationService.calibratedURLCount) of \(vm.urlRotation.activeURLs.count) URLs calibrated").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if calibrationService.calibratedURLCount > 0 {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+
+            Button {
+                guard !isAutoCalibrating else { return }
+                isAutoCalibrating = true
+                autoCalibrationLog = []
+                vm.log("Starting bulk auto-calibration with TRUE DETECTION...")
+                Task {
+                    let urls = vm.urlRotation.enabledURLs
+                    for (index, rotUrl) in urls.enumerated() {
+                        guard let url = rotUrl.url else { continue }
+                        let msg = "[\(index + 1)/\(urls.count)] Probing \(rotUrl.host)..."
+                        autoCalibrationLog.append(msg)
+                        vm.log(msg)
+
+                        let session = LoginSiteWebSession(targetURL: url)
+                        session.stealthEnabled = vm.stealthEnabled
+                        session.setUp(wipeAll: true)
+                        let loaded = await session.loadPage(timeout: 20)
+                        if loaded {
+                            if let cal = await session.autoCalibrate() {
+                                calibrationService.saveCalibration(cal, forURL: url.absoluteString)
+                                let detail = "\(rotUrl.host): email=\(cal.emailField?.cssSelector ?? "?") btn=\(cal.loginButton?.cssSelector ?? "?")"
+                                autoCalibrationLog.append("  \u{2705} \(detail)")
+                                vm.log("Calibrated \(rotUrl.host)", level: .success)
+                            } else {
+                                autoCalibrationLog.append("  \u{274C} \(rotUrl.host): probe failed")
+                                vm.log("Calibration failed for \(rotUrl.host)", level: .warning)
+                            }
+                        } else {
+                            autoCalibrationLog.append("  \u{274C} \(rotUrl.host): page load failed")
+                            vm.log("Page load failed for \(rotUrl.host)", level: .warning)
+                        }
+                        session.tearDown(wipeAll: true)
+                    }
+                    isAutoCalibrating = false
+                    vm.log("Bulk calibration complete: \(calibrationService.calibratedURLCount) calibrated", level: .success)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    if isAutoCalibrating {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "wand.and.stars").foregroundStyle(accentColor)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-Calibrate All URLs").font(.subheadline.bold())
+                        Text(isAutoCalibrating ? "Probing \(autoCalibrationLog.count) URLs..." : "TRUE DETECTION probe on all enabled URLs")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            .disabled(isAutoCalibrating)
+
+            ForEach(vm.urlRotation.enabledURLs.prefix(5), id: \.id) { rotUrl in
+                Button {
+                    calibrationURL = rotUrl.urlString
+                    showCalibrationSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        let hasCal = calibrationService.calibrationFor(url: rotUrl.urlString)?.isCalibrated == true
+                        Image(systemName: hasCal ? "checkmark.circle.fill" : "circle.dashed")
+                            .foregroundStyle(hasCal ? .green : .secondary)
+                            .font(.caption)
+                        Text(rotUrl.host)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                        Spacer()
+                        Text("Calibrate")
+                            .font(.caption2)
+                            .foregroundStyle(accentColor)
+                    }
+                }
+            }
+
+            if calibrationService.totalCalibrations > 0 {
+                Button(role: .destructive) {
+                    calibrationService.deleteAll()
+                    vm.log("All calibrations deleted", level: .warning)
+                } label: {
+                    Label("Clear All Calibrations", systemImage: "trash")
+                        .font(.subheadline)
+                }
+            }
+        } header: {
+            HStack {
+                Image(systemName: "shield.checkered")
+                Text("URL Calibration + TRUE DETECTION")
+            }
+        } footer: {
+            Text("Calibrates CSS selectors (#email, #login-password, #login-submit) per URL using TRUE DETECTION probing. Success validated by balance/wallet/my account/logout markers.")
+        }
+    }
+
+    // MARK: - Unified Network
+
+    private var unifiedNetworkSection: some View {
+        Group {
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: proxyService.networkRegion == .usa ? "flag.fill" : "globe.asia.australia.fill")
+                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Network Region").font(.body)
+                        Text("All connections use \(proxyService.networkRegion.label) configs").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { proxyService.networkRegion },
+                        set: { proxyService.networkRegion = $0 }
+                    )) {
+                        Text("USA").tag(NetworkRegion.usa)
+                        Text("AU").tag(NetworkRegion.au)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 120)
+                }
+                .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.networkRegion)
+
+                Picker(selection: Binding(
+                    get: { proxyService.unifiedConnectionMode },
+                    set: { proxyService.setUnifiedConnectionMode($0) }
+                )) {
+                    ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                        Label(mode.label, systemImage: mode.icon).tag(mode)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "network").foregroundStyle(.blue)
+                        Text("Connection Mode")
+                    }
+                }
+                .pickerStyle(.menu)
+                .sensoryFeedback(.impact(weight: .medium), trigger: proxyService.unifiedConnectionMode)
+
+                Button {
+                    proxyService.syncAllNetworkConfigsAcrossTargets()
+                    vm.log("Synced all network configs across Joe/Ignition/PPSR", level: .success)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Sync All Targets").font(.subheadline.bold())
+                            Text("Apply unified configs to Joe, Ignition & PPSR").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+                .sensoryFeedback(.success, trigger: proxyService.unifiedConnectionMode)
+            } header: {
+                HStack {
+                    Image(systemName: "network.badge.shield.half.filled")
+                    Text("Unified Network")
+                    Spacer()
+                    Text(proxyService.unifiedConnectionMode.label)
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(unifiedModeColor)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(unifiedModeColor.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            } footer: {
+                Text("One set of network configs applied to all modes (Joe Fortune, Ignition, PPSR). Region toggle selects USA or AU proxy/VPN endpoints.")
+            }
+
+            if proxyService.unifiedConnectionMode == .proxy {
+                unifiedProxySection
+            } else if proxyService.unifiedConnectionMode == .openvpn {
+                unifiedOpenVPNSection
+            } else if proxyService.unifiedConnectionMode == .wireguard {
+                unifiedWireGuardSection
+            } else {
+                unifiedDNSSection
+            }
+        }
+    }
+
+    private var unifiedModeColor: Color {
+        switch proxyService.unifiedConnectionMode {
+        case .proxy: .blue
+        case .openvpn: .indigo
+        case .wireguard: .purple
+        case .dns: .cyan
+        }
+    }
+
+    private var unifiedProxySection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "network").foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SOCKS5 Proxies").font(.body)
+                    Text("\(proxyService.unifiedProxies.count) proxies loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                unifiedProxyBadge
+            }
+
+            Button { showProxyImport = true } label: {
+                Label("Import Proxies", systemImage: "doc.on.clipboard.fill")
+            }
+
+            if !proxyService.unifiedProxies.isEmpty {
+                Button {
+                    guard !isTestingProxies else { return }
+                    isTestingProxies = true
+                    Task {
+                        vm.log("Testing all \(proxyService.unifiedProxies.count) unified proxies...")
+                        await proxyService.testAllUnifiedProxies()
+                        let working = proxyService.unifiedProxies.filter(\.isWorking).count
+                        vm.log("Proxy test: \(working)/\(proxyService.unifiedProxies.count) working", level: .success)
+                        isTestingProxies = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test All Proxies", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingProxies { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingProxies)
+
+                Button {
+                    let exported = proxyService.exportProxies(target: .joe)
+                    UIPasteboard.general.string = exported
+                    vm.log("Exported \(proxyService.unifiedProxies.count) proxies to clipboard", level: .success)
+                } label: {
+                    Label("Export to Clipboard", systemImage: "doc.on.doc")
+                }
+
+                let deadCount = proxyService.unifiedProxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                if deadCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeDead(forIgnition: false)
+                        proxyService.syncProxiesAcrossTargets()
+                        vm.log("Removed \(deadCount) dead proxies")
+                    } label: {
+                        Label("Remove \(deadCount) Dead", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedProxies()
+                    vm.log("Cleared all unified proxies")
+                } label: {
+                    Label("Clear All Proxies", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label("Unified SOCKS5 Proxies", systemImage: "network")
+        }
+    }
+
+    @ViewBuilder
+    private var unifiedProxyBadge: some View {
+        let proxies = proxyService.unifiedProxies
+        if !proxies.isEmpty {
+            HStack(spacing: 4) {
+                let working = proxies.filter(\.isWorking).count
+                if working > 0 {
+                    Text("\(working) ok")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.green)
+                }
+                let dead = proxies.filter({ !$0.isWorking && $0.lastTested != nil }).count
+                if dead > 0 {
+                    Text("\(dead) dead")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Color(.tertiarySystemFill)).clipShape(Capsule())
+        }
+    }
+
+    private var unifiedOpenVPNSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "shield.lefthalf.filled").foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OpenVPN Configs").font(.body)
+                    Text("\(proxyService.unifiedVPNConfigs.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                let enabledCount = proxyService.unifiedVPNConfigs.filter(\.isEnabled).count
+                if enabledCount > 0 {
+                    Text("\(enabledCount) active")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.indigo)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.indigo.opacity(0.12)).clipShape(Capsule())
+                }
+            }
+
+            Button { showVPNFileImporter = true } label: {
+                Label("Import .ovpn Files", systemImage: "doc.badge.plus")
+            }
+
+            if !proxyService.unifiedVPNConfigs.isEmpty {
+                Button {
+                    guard !isTestingVPNConfigs else { return }
+                    isTestingVPNConfigs = true
+                    Task {
+                        vm.log("Testing \(proxyService.unifiedVPNConfigs.count) unified OpenVPN configs...")
+                        await proxyService.testAllUnifiedVPNConfigs()
+                        let reachable = proxyService.unifiedVPNConfigs.filter(\.isReachable).count
+                        vm.log("OpenVPN test: \(reachable)/\(proxyService.unifiedVPNConfigs.count) reachable", level: .success)
+                        isTestingVPNConfigs = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test All OpenVPN", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingVPNConfigs { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingVPNConfigs)
+
+                ForEach(proxyService.unifiedVPNConfigs) { vpn in
+                    HStack(spacing: 8) {
+                        Image(systemName: vpn.isEnabled ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(vpn.isEnabled ? .indigo : .secondary)
+                            .onTapGesture {
+                                proxyService.toggleVPNConfig(vpn, target: .joe, enabled: !vpn.isEnabled)
+                                proxyService.syncVPNConfigsAcrossTargets()
+                            }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(vpn.fileName)
+                                .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(vpn.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                Text(vpn.statusLabel)
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(vpn.isReachable ? .green : (vpn.lastTested != nil ? .red : .gray))
+                                if let latency = vpn.lastLatencyMs {
+                                    Text("\(latency)ms")
+                                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            proxyService.removeVPNConfig(vpn, target: .joe)
+                            proxyService.syncVPNConfigsAcrossTargets()
+                            vm.log("Removed VPN: \(vpn.fileName)")
+                        } label: { Label("Delete", systemImage: "trash") }
+                    }
+                }
+
+                let unreachableCount = proxyService.unifiedVPNConfigs.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                if unreachableCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeUnreachableVPNConfigs(target: .joe)
+                        proxyService.syncVPNConfigsAcrossTargets()
+                        vm.log("Removed \(unreachableCount) unreachable OpenVPN configs")
+                    } label: {
+                        Label("Remove \(unreachableCount) Unreachable", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedVPNConfigs()
+                    vm.log("Cleared all unified OpenVPN configs")
+                } label: {
+                    Label("Clear All Configs", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label("Unified OpenVPN", systemImage: "shield.lefthalf.filled")
+        }
+    }
+
+    private var unifiedWireGuardSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.trianglebadge.exclamationmark.fill").foregroundStyle(.purple)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("WireGuard Configs").font(.body)
+                    Text("\(proxyService.unifiedWGConfigs.count) configs loaded").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                let enabledCount = proxyService.unifiedWGConfigs.filter(\.isEnabled).count
+                if enabledCount > 0 {
+                    Text("\(enabledCount) active")
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.12)).clipShape(Capsule())
+                }
+            }
+
+            Button { showWGFileImporter = true } label: {
+                Label("Import .conf Files", systemImage: "doc.badge.plus")
+            }
+
+            if !proxyService.unifiedWGConfigs.isEmpty {
+                Button {
+                    guard !isTestingWGConfigs else { return }
+                    isTestingWGConfigs = true
+                    Task {
+                        vm.log("Testing \(proxyService.unifiedWGConfigs.count) unified WireGuard configs...")
+                        await proxyService.testAllUnifiedWGConfigs()
+                        let reachable = proxyService.unifiedWGConfigs.filter(\.isReachable).count
+                        vm.log("WireGuard test: \(reachable)/\(proxyService.unifiedWGConfigs.count) reachable", level: .success)
+                        isTestingWGConfigs = false
+                    }
+                } label: {
+                    HStack {
+                        Label("Test All WireGuard", systemImage: "antenna.radiowaves.left.and.right")
+                        if isTestingWGConfigs { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(isTestingWGConfigs)
+
+                ForEach(proxyService.unifiedWGConfigs) { wg in
+                    HStack(spacing: 8) {
+                        Image(systemName: wg.isEnabled ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(wg.isEnabled ? .purple : .secondary)
+                            .onTapGesture {
+                                proxyService.toggleWGConfig(wg, target: .joe, enabled: !wg.isEnabled)
+                                proxyService.syncWGConfigsAcrossTargets()
+                            }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(wg.fileName)
+                                .font(.system(.caption, design: .monospaced, weight: .medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(wg.displayString)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                                Text(wg.statusLabel)
+                                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                                    .foregroundStyle(wg.isReachable ? .green : (wg.lastTested != nil ? .red : .gray))
+                            }
+                        }
+                        Spacer()
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            proxyService.removeWGConfig(wg, target: .joe)
+                            proxyService.syncWGConfigsAcrossTargets()
+                            vm.log("Removed WireGuard: \(wg.fileName)")
+                        } label: { Label("Delete", systemImage: "trash") }
+                    }
+                }
+
+                let unreachableWGCount = proxyService.unifiedWGConfigs.filter({ !$0.isReachable && $0.lastTested != nil }).count
+                if unreachableWGCount > 0 {
+                    Button(role: .destructive) {
+                        proxyService.removeUnreachableWGConfigs(target: .joe)
+                        proxyService.syncWGConfigsAcrossTargets()
+                        vm.log("Removed \(unreachableWGCount) unreachable WireGuard configs")
+                    } label: {
+                        Label("Remove \(unreachableWGCount) Unreachable", systemImage: "xmark.circle")
+                    }
+                }
+
+                Button(role: .destructive) {
+                    proxyService.clearAllUnifiedWGConfigs()
+                    vm.log("Cleared all unified WireGuard configs")
+                } label: {
+                    Label("Clear All Configs", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label("Unified WireGuard", systemImage: "lock.trianglebadge.exclamationmark.fill")
+        }
+    }
+
+    private var unifiedDNSSection: some View {
+        Section {
+            let enabled = PPSRDoHService.shared.managedProviders.filter(\.isEnabled).count
+            let total = PPSRDoHService.shared.managedProviders.count
+            HStack(spacing: 10) {
+                Image(systemName: "lock.shield.fill").foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DoH DNS Rotation").font(.body)
+                    Text("\(enabled)/\(total) providers enabled").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            }
+        } header: {
+            Label("Unified DNS", systemImage: "lock.shield.fill")
+        } footer: {
+            Text("DNS-over-HTTPS rotation is managed globally. Configure providers in the Network settings page.")
+        }
+    }
+
+    private var unifiedProxyImportSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle().fill(.blue).frame(width: 10, height: 10)
+                        Text("Import Unified SOCKS5 Proxies").font(.headline)
+                    }
+                    Text("Imported proxies are synced across all targets (Joe, Ignition, PPSR).").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        if let clipboard = UIPasteboard.general.string, !clipboard.isEmpty {
+                            proxyBulkText = clipboard
+                        }
+                    } label: {
+                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard").font(.caption)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    let lineCount = proxyBulkText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                    if lineCount > 0 {
+                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+
+                TextEditor(text: $proxyBulkText)
+                    .font(.system(.callout, design: .monospaced))
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 200)
+                    .overlay(alignment: .topLeading) {
+                        if proxyBulkText.isEmpty {
+                            Text("Paste SOCKS5 proxies here...\n\n127.0.0.1:1080\nuser:pass@proxy.com:9050")
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.quaternary)
+                                .padding(.horizontal, 14).padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                if let report = proxyImportReport {
+                    HStack(spacing: 12) {
+                        if report.added > 0 {
+                            Label("\(report.added) added", systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(.green)
+                        }
+                        if report.duplicates > 0 {
+                            Label("\(report.duplicates) duplicates", systemImage: "arrow.triangle.2.circlepath").font(.caption.bold()).foregroundStyle(.orange)
+                        }
+                        if !report.failed.isEmpty {
+                            Label("\(report.failed.count) failed", systemImage: "xmark.circle.fill").font(.caption.bold()).foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Import Proxies").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showProxyImport = false
+                        proxyBulkText = ""
+                        proxyImportReport = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let report = proxyService.importUnifiedProxy(proxyBulkText)
+                        proxyImportReport = report
+                        if report.added > 0 {
+                            vm.log("Imported \(report.added) unified SOCKS5 proxies", level: .success)
+                        }
+                        proxyBulkText = ""
+                        if report.failed.isEmpty && report.added > 0 {
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                showProxyImport = false
+                                proxyImportReport = nil
+                            }
+                        }
+                    }
+                    .disabled(proxyBulkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    private func handleVPNFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            var imported = 0
+            for url in urls {
+                guard url.startAccessingSecurityScopedResource() else { continue }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url),
+                   let content = String(data: data, encoding: .utf8) {
+                    let fileName = url.lastPathComponent
+                    if let config = OpenVPNConfig.parse(fileName: fileName, content: content) {
+                        proxyService.importUnifiedVPNConfig(config)
+                        imported += 1
+                    } else {
+                        vm.log("Failed to parse: \(fileName)", level: .warning)
+                    }
+                }
+            }
+            if imported > 0 {
+                vm.log("Imported \(imported) OpenVPN config(s) to all targets", level: .success)
+            }
+        case .failure(let error):
+            vm.log("VPN import error: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    private func handleWGFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            var parsed: [WireGuardConfig] = []
+            var failedFiles: [String] = []
+            for url in urls {
+                guard url.startAccessingSecurityScopedResource() else {
+                    failedFiles.append(url.lastPathComponent)
+                    continue
+                }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let data = try? Data(contentsOf: url),
+                   let content = String(data: data, encoding: .utf8) {
+                    let fileName = url.lastPathComponent
+                    let configs = WireGuardConfig.parseMultiple(fileName: fileName, content: content)
+                    if configs.isEmpty {
+                        if let single = WireGuardConfig.parse(fileName: fileName, content: content) {
+                            parsed.append(single)
+                        } else {
+                            failedFiles.append(fileName)
+                        }
+                    } else {
+                        parsed.append(contentsOf: configs)
+                    }
+                } else {
+                    failedFiles.append(url.lastPathComponent)
+                }
+            }
+            if !parsed.isEmpty {
+                let report = proxyService.importUnifiedWGConfigs(parsed)
+                vm.log("WireGuard import: \(report.added) added, \(report.duplicates) duplicates — synced to all targets", level: .success)
+            }
+            for name in failedFiles {
+                vm.log("Failed to parse WireGuard: \(name)", level: .warning)
+            }
+        case .failure(let error):
+            vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
         }
     }
 

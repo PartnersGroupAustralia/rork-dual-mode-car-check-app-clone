@@ -18,6 +18,8 @@ nonisolated struct ComprehensiveExportConfig: Codable, Sendable {
     var dnsServers: [ExportDNS] = []
     var blacklist: [ExportBlacklist] = []
     var connectionModes: ExportConnectionModes = ExportConnectionModes()
+    var networkRegion: String = "USA"
+    var unifiedConnectionMode: String = "DNS"
     var settings: ExportSettings = ExportSettings()
     var automationSettings: AutomationSettings?
 
@@ -214,6 +216,8 @@ class AppDataExportService {
             ignition: proxyService.ignitionConnectionMode.rawValue,
             ppsr: proxyService.ppsrConnectionMode.rawValue
         )
+        config.networkRegion = proxyService.networkRegion.rawValue
+        config.unifiedConnectionMode = proxyService.unifiedConnectionMode.rawValue
 
         config.settings = .init(
             autoExcludeBlacklist: blacklistService.autoExcludeBlacklist,
@@ -484,6 +488,13 @@ class AppDataExportService {
         }
         if let ppsrMode = ConnectionMode(rawValue: config.connectionModes.ppsr) {
             proxyService.setConnectionMode(ppsrMode, for: .ppsr)
+        }
+
+        if let region = NetworkRegion(rawValue: config.networkRegion) {
+            proxyService.networkRegion = region
+        }
+        if let unified = ConnectionMode(rawValue: config.unifiedConnectionMode) {
+            proxyService.setUnifiedConnectionMode(unified)
         }
 
         blacklistService.autoExcludeBlacklist = config.settings.autoExcludeBlacklist
@@ -774,6 +785,8 @@ class AppDataExportService {
         lines.append("Joe Connection: \(proxyService.joeConnectionMode.label)")
         lines.append("Ignition Connection: \(proxyService.ignitionConnectionMode.label)")
         lines.append("PPSR Connection: \(proxyService.ppsrConnectionMode.label)")
+        lines.append("Unified Connection: \(proxyService.unifiedConnectionMode.label)")
+        lines.append("Network Region: \(proxyService.networkRegion.label)")
         lines.append("Auto-Exclude Blacklist: \(blacklistService.autoExcludeBlacklist)")
         lines.append("Auto-Blacklist No Acc: \(blacklistService.autoBlacklistNoAcc)")
         return lines.joined(separator: "\n")

@@ -26,6 +26,25 @@ nonisolated enum ConnectionMode: String, CaseIterable, Sendable {
     }
 }
 
+nonisolated enum NetworkRegion: String, CaseIterable, Codable, Sendable {
+    case usa = "USA"
+    case au = "AU"
+
+    var icon: String {
+        switch self {
+        case .usa: "flag.fill"
+        case .au: "globe.asia.australia.fill"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .usa: "United States"
+        case .au: "Australia"
+        }
+    }
+}
+
 @Observable
 @MainActor
 class ProxyRotationService {
@@ -58,6 +77,13 @@ class ProxyRotationService {
     var ignitionConnectionMode: ConnectionMode = .dns
     var ppsrConnectionMode: ConnectionMode = .dns
 
+    var unifiedConnectionMode: ConnectionMode = .dns {
+        didSet { syncUnifiedConnectionMode() }
+    }
+    var networkRegion: NetworkRegion = .usa {
+        didSet { persistNetworkRegion() }
+    }
+
     struct ImportReport {
         let added: Int
         let duplicates: Int
@@ -69,6 +95,8 @@ class ProxyRotationService {
     private let ignitionPersistKey = "saved_socks5_proxies_ignition_v1"
     private let ppsrPersistKey = "saved_socks5_proxies_ppsr_v1"
     private let connectionModePersistKey = "connection_modes_v1"
+    private let networkRegionPersistKey = "network_region_v1"
+    private let unifiedModePersistKey = "unified_connection_mode_v1"
 
     private let joeVPNPersistKey = "openvpn_configs_joe_v1"
     private let ignitionVPNPersistKey = "openvpn_configs_ignition_v1"
@@ -87,7 +115,9 @@ class ProxyRotationService {
         loadConnectionModes()
         loadVPNConfigs()
         loadWGConfigs()
-        logger.log("ProxyRotation: init — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count)", category: .proxy, level: .info)
+        loadNetworkRegion()
+        loadUnifiedMode()
+        logger.log("ProxyRotation: init — joe:\(savedProxies.count) ign:\(ignitionProxies.count) ppsr:\(ppsrProxies.count) vpn:\(joeVPNConfigs.count+ignitionVPNConfigs.count+ppsrVPNConfigs.count) wg:\(joeWGConfigs.count+ignitionWGConfigs.count+ppsrWGConfigs.count) region:\(networkRegion.rawValue)", category: .proxy, level: .info)
     }
 
     func setConnectionMode(_ mode: ConnectionMode, for target: ProxyTarget) {
@@ -97,6 +127,131 @@ class ProxyRotationService {
         case .ppsr: ppsrConnectionMode = mode
         }
         persistConnectionModes()
+    }
+
+    func setUnifiedConnectionMode(_ mode: ConnectionMode) {
+        unifiedConnectionMode = mode
+        joeConnectionMode = mode
+        ignitionConnectionMode = mode
+        ppsrConnectionMode = mode
+        persistConnectionModes()
+        persistUnifiedMode()
+        logger.log("ProxyRotation: unified connection mode set to \(mode.label)", category: .proxy, level: .success)
+    }
+
+    private func syncUnifiedConnectionMode() {
+        joeConnectionMode = unifiedConnectionMode
+        ignitionConnectionMode = unifiedConnectionMode
+        ppsrConnectionMode = unifiedConnectionMode
+        persistConnectionModes()
+    }
+
+    func syncProxiesAcrossTargets() {
+        ignitionProxies = savedProxies
+        ppsrProxies = savedProxies
+        persistIgnitionProxies()
+        persistPPSRProxies()
+        logger.log("ProxyRotation: synced \(savedProxies.count) proxies across all targets", category: .proxy, level: .info)
+    }
+
+    func syncVPNConfigsAcrossTargets() {
+        ignitionVPNConfigs = joeVPNConfigs
+        ppsrVPNConfigs = joeVPNConfigs
+        persistVPNConfigs(for: .ignition)
+        persistVPNConfigs(for: .ppsr)
+        logger.log("ProxyRotation: synced \(joeVPNConfigs.count) VPN configs across all targets", category: .vpn, level: .info)
+    }
+
+    func syncWGConfigsAcrossTargets() {
+        ignitionWGConfigs = joeWGConfigs
+        ppsrWGConfigs = joeWGConfigs
+        persistWGConfigs(for: .ignition)
+        persistWGConfigs(for: .ppsr)
+        logger.log("ProxyRotation: synced \(joeWGConfigs.count) WG configs across all targets", category: .vpn, level: .info)
+    }
+
+    func syncAllNetworkConfigsAcrossTargets() {
+        syncProxiesAcrossTargets()
+        syncVPNConfigsAcrossTargets()
+        syncWGConfigsAcrossTargets()
+    }
+
+    var unifiedProxies: [ProxyConfig] { savedProxies }
+    var unifiedVPNConfigs: [OpenVPNConfig] { joeVPNConfigs }
+    var unifiedWGConfigs: [WireGuardConfig] { joeWGConfigs }
+
+    func importUnifiedProxy(_ text: String) -> ImportReport {
+        let report = bulkImportSOCKS5(text, forIgnition: false)
+        syncProxiesAcrossTargets()
+        return report
+    }
+
+    func importUnifiedVPNConfig(_ config: OpenVPNConfig) {
+        importVPNConfig(config, for: .joe)
+        syncVPNConfigsAcrossTargets()
+    }
+
+    func importUnifiedWGConfigs(_ configs: [WireGuardConfig]) -> ImportReport {
+        let report = bulkImportWGConfigs(configs, for: .joe)
+        syncWGConfigsAcrossTargets()
+        return report
+    }
+
+    func clearAllUnifiedProxies() {
+        removeAll(forIgnition: false)
+        removeAll(forIgnition: true)
+        removeAll(target: .ppsr)
+    }
+
+    func clearAllUnifiedVPNConfigs() {
+        clearAllVPNConfigs(target: .joe)
+        clearAllVPNConfigs(target: .ignition)
+        clearAllVPNConfigs(target: .ppsr)
+    }
+
+    func clearAllUnifiedWGConfigs() {
+        clearAllWGConfigs(target: .joe)
+        clearAllWGConfigs(target: .ignition)
+        clearAllWGConfigs(target: .ppsr)
+    }
+
+    func testAllUnifiedProxies() async {
+        await testAllProxies(forIgnition: false)
+        syncProxiesAcrossTargets()
+    }
+
+    func testAllUnifiedVPNConfigs() async {
+        await testAllVPNConfigs(target: .joe)
+        syncVPNConfigsAcrossTargets()
+    }
+
+    func testAllUnifiedWGConfigs() async {
+        await testAllWGConfigs(target: .joe)
+        syncWGConfigsAcrossTargets()
+    }
+
+    private func persistNetworkRegion() {
+        UserDefaults.standard.set(networkRegion.rawValue, forKey: networkRegionPersistKey)
+    }
+
+    private func loadNetworkRegion() {
+        if let raw = UserDefaults.standard.string(forKey: networkRegionPersistKey),
+           let region = NetworkRegion(rawValue: raw) {
+            networkRegion = region
+        }
+    }
+
+    private func persistUnifiedMode() {
+        UserDefaults.standard.set(unifiedConnectionMode.rawValue, forKey: unifiedModePersistKey)
+    }
+
+    private func loadUnifiedMode() {
+        if let raw = UserDefaults.standard.string(forKey: unifiedModePersistKey),
+           let mode = ConnectionMode(rawValue: raw) {
+            unifiedConnectionMode = mode
+        } else {
+            unifiedConnectionMode = joeConnectionMode
+        }
     }
 
     func connectionMode(for target: ProxyTarget) -> ConnectionMode {

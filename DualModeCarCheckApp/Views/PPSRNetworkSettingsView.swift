@@ -19,6 +19,7 @@ struct PPSRNetworkSettingsView: View {
 
     var body: some View {
         List {
+            unifiedNetworkBanner
             connectionModeSection
             nordVPNSection
             endpointSection
@@ -90,6 +91,39 @@ struct PPSRNetworkSettingsView: View {
             case .failure(let error):
                 vm.log("WireGuard import error: \(error.localizedDescription)", level: .error)
             }
+        }
+    }
+
+    // MARK: - Unified Network Banner
+
+    private var unifiedNetworkBanner: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "network.badge.shield.half.filled")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Unified Network Active").font(.subheadline.bold())
+                    Text("Mode: \(proxyService.unifiedConnectionMode.label) \u{2022} Region: \(proxyService.networkRegion.label)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: proxyService.networkRegion.icon)
+                        .font(.caption)
+                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                    Text(proxyService.networkRegion.rawValue)
+                        .font(.system(.caption2, design: .monospaced, weight: .bold))
+                        .foregroundStyle(proxyService.networkRegion == .usa ? .blue : .orange)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background((proxyService.networkRegion == .usa ? Color.blue : .orange).opacity(0.12))
+                .clipShape(Capsule())
+            }
+        } header: {
+            Text("Network")
+        } footer: {
+            Text("Unified network configs are managed in Automation Config. Changes sync across all targets.")
         }
     }
 
