@@ -422,7 +422,7 @@ class LoginAutomationEngine {
                 navigationDetected: pollResult.navigationDetected,
                 contentChanged: pollResult.anyContentChange
             )
-            let evalMs = logger.stopTimer(key: "\(sessionId)_eval_\(cycle)")
+            let _ = logger.stopTimer(key: "\(sessionId)_eval_\(cycle)")
             lastEvaluation = evaluation
             let cycleMs = logger.stopTimer(key: "\(sessionId)_cycle_\(cycle)")
             logger.log("Cycle \(cycle) evaluation: \(evaluation.outcome) score=\(evaluation.score) signals=\(evaluation.signals.count) — \(evaluation.reason)", category: .evaluation, level: evaluation.outcome == .success ? .success : .info, sessionId: sessionId, durationMs: cycleMs, metadata: ["score": "\(evaluation.score)", "outcome": "\(evaluation.outcome)", "signalCount": "\(evaluation.signals.count)"])
@@ -904,7 +904,10 @@ class LoginAutomationEngine {
             terminalImage = await captureTerminalMessageCrop(session: session, terminalType: terminalType)
         }
 
-        let finalImage = terminalImage ?? await session.captureScreenshot()
+        var finalImage = terminalImage
+        if finalImage == nil {
+            finalImage = await session.captureScreenshot()
+        }
         guard let finalImage else { return }
 
         let compressed: UIImage
