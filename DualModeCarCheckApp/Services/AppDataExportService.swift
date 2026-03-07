@@ -42,6 +42,13 @@ nonisolated struct ComprehensiveExportConfig: Codable, Sendable {
     var loginCropRect: ExportRect?
     var ppsrCropRect: ExportRect?
 
+    var calibrations: [String: LoginCalibrationService.URLCalibration]?
+    var customTemplates: [AutomationTemplate]?
+    var speedProfile: ConcurrentSpeedOptimizer.SpeedProfile?
+    var nordVPNAccessKey: String?
+    var nordVPNPrivateKey: String?
+    var tempDisabledBgCheckEnabled: Bool?
+
     nonisolated struct ExportURL: Codable, Sendable {
         let url: String
         let enabled: Bool
@@ -315,6 +322,30 @@ class AppDataExportService {
             config.loginCropRect = .init(x: x, y: y, width: w, height: h)
         }
 
+        let calService = LoginCalibrationService.shared
+        if !calService.calibrations.isEmpty {
+            config.calibrations = calService.calibrations
+        }
+
+        let customTemplates = TemplatePersistenceService.shared.loadCustomTemplates()
+        if !customTemplates.isEmpty {
+            config.customTemplates = customTemplates
+        }
+
+        if let speedProfile = ConcurrentSpeedOptimizer.shared.loadProfile() {
+            config.speedProfile = speedProfile
+        }
+
+        let nord = NordVPNService.shared
+        if !nord.accessKey.isEmpty {
+            config.nordVPNAccessKey = nord.accessKey
+        }
+        if !nord.privateKey.isEmpty {
+            config.nordVPNPrivateKey = nord.privateKey
+        }
+
+        config.tempDisabledBgCheckEnabled = TempDisabledCheckService.shared.backgroundCheckEnabled
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(config), let json = String(data: data, encoding: .utf8) {
@@ -338,6 +369,11 @@ class AppDataExportService {
         var debugConfigsImported: Int = 0
         var loginSettingsImported: Bool = false
         var ppsrSettingsImported: Bool = false
+        var calibrationsImported: Int = 0
+        var templatesImported: Int = 0
+        var speedProfileImported: Bool = false
+        var nordKeysImported: Bool = false
+        var tempDisabledSettingsImported: Bool = false
         var errors: [String] = []
 
         var summary: String {
@@ -356,6 +392,11 @@ class AppDataExportService {
             if settingsImported { parts.append("automation settings") }
             if loginSettingsImported { parts.append("login app settings") }
             if ppsrSettingsImported { parts.append("PPSR app settings") }
+            if calibrationsImported > 0 { parts.append("\(calibrationsImported) calibrations") }
+            if templatesImported > 0 { parts.append("\(templatesImported) templates") }
+            if speedProfileImported { parts.append("speed profile") }
+            if nordKeysImported { parts.append("NordVPN keys") }
+            if tempDisabledSettingsImported { parts.append("temp disabled settings") }
             if parts.isEmpty { return "Nothing imported" }
             return "Imported: " + parts.joined(separator: ", ")
         }
@@ -631,6 +672,48 @@ class AppDataExportService {
         if let loginCrop = config.loginCropRect {
             let dict: [String: Double] = ["x": loginCrop.x, "y": loginCrop.y, "w": loginCrop.width, "h": loginCrop.height]
             UserDefaults.standard.set(dict, forKey: "login_crop_rect_v1")
+        }
+
+        if let calibrations = config.calibrations, !calibrations.isEmpty {
+            let calService = LoginCalibrationService.shared
+            for (key, cal) in calibrations {
+                calService.saveCalibration(cal, forURL: "https://\(key)")
+                result.calibrationsImported += 1
+            }
+        }
+
+        if let templates = config.customTemplates, !templates.isEmpty {
+            var existing = TemplatePersistenceService.shared.loadCustomTemplates()
+            let existingIds = Set(existing.map(\.id))
+            var added = 0
+            for t in templates where !existingIds.contains(t.id) {
+                existing.append(t)
+                added += 1
+            }
+            if added > 0 {
+                TemplatePersistenceService.shared.saveTemplates(existing)
+            }
+            result.templatesImported = added
+        }
+
+        if let profile = config.speedProfile {
+            ConcurrentSpeedOptimizer.shared.saveProfile(profile)
+            result.speedProfileImported = true
+        }
+
+        let nord = NordVPNService.shared
+        if let accessKey = config.nordVPNAccessKey, !accessKey.isEmpty {
+            nord.setAccessKey(accessKey)
+            result.nordKeysImported = true
+        }
+        if let privateKey = config.nordVPNPrivateKey, !privateKey.isEmpty {
+            nord.setPrivateKey(privateKey)
+            result.nordKeysImported = true
+        }
+
+        if let bgCheck = config.tempDisabledBgCheckEnabled {
+            TempDisabledCheckService.shared.backgroundCheckEnabled = bgCheck
+            result.tempDisabledSettingsImported = true
         }
 
         return result

@@ -63,6 +63,7 @@ struct DualModeCarCheckAppApp: App {
             .task {
                 if !nordInitialized {
                     nordInitialized = true
+                    DefaultSettingsService.shared.applyDefaultsIfNeeded()
                     let nord = NordVPNService.shared
                     if !nord.hasAccessKey {
                         nord.setAccessKey("e9f2abb927fb478e7c61afed90ee4cae8e3094b47418748ea7e518c955a0a0d1")

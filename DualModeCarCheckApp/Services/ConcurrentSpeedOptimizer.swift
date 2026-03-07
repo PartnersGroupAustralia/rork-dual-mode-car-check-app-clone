@@ -26,7 +26,7 @@ class ConcurrentSpeedOptimizer {
         let errorRate: Double
     }
 
-    struct SpeedProfile: Codable {
+    nonisolated struct SpeedProfile: Codable, Sendable {
         var concurrency: Int
         var stepDelayMs: Int
         var trialDelayMs: Int
