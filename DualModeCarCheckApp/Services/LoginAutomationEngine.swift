@@ -284,7 +284,9 @@ class LoginAutomationEngine {
             logger.log("Pattern '\(selectedPattern.rawValue)' result: \(patternResult.summary)", category: .automation, level: patternResult.overallSuccess ? .success : .warning, sessionId: sessionId, durationMs: patternMs)
 
             if !patternResult.usernameFilled || !patternResult.passwordFilled {
-                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): field fill failed — falling back to calibrated+legacy fill", level: .warning))
+                attempt.logs.append(PPSRLogEntry(message: "Cycle \(cycle): field fill failed — clearing fields then falling back to calibrated+legacy fill", level: .warning))
+                await session.clearAllInputFields()
+                try? await Task.sleep(for: .milliseconds(200))
                 let calUserResult = await session.fillUsernameCalibrated(attempt.credential.username, calibration: calibration)
                 attempt.logs.append(PPSRLogEntry(message: "Calibrated email fill: \(calUserResult.detail)", level: calUserResult.success ? .info : .warning))
                 try? await Task.sleep(for: .milliseconds(300))

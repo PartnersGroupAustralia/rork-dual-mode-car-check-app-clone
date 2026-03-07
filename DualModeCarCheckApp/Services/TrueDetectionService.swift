@@ -239,8 +239,13 @@ class TrueDetectionService {
             if (!el) return 'NOT_FOUND';
             el.focus();
             el.dispatchEvent(new Event('focus', {bubbles: true}));
-            el.value = '';
             var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (nativeSetter && nativeSetter.set) {
+                nativeSetter.set.call(el, '');
+            } else {
+                el.value = '';
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (nativeSetter && nativeSetter.set) {
                 nativeSetter.set.call(el, '\(escaped)');
             } else {

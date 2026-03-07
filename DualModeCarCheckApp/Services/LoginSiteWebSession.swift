@@ -257,8 +257,13 @@ class LoginSiteWebSession: NSObject {
             var el = findField(\(strategies));
             if (!el) return 'NOT_FOUND';
             el.focus();
-            el.value = '';
             var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (nativeInputValueSetter && nativeInputValueSetter.set) {
+                nativeInputValueSetter.set.call(el, '');
+            } else {
+                el.value = '';
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (nativeInputValueSetter && nativeInputValueSetter.set) {
                 nativeInputValueSetter.set.call(el, '\(escaped)');
             } else {
@@ -268,10 +273,6 @@ class LoginSiteWebSession: NSObject {
             el.dispatchEvent(new Event('input', {bubbles: true}));
             el.dispatchEvent(new Event('change', {bubbles: true}));
             el.dispatchEvent(new Event('blur', {bubbles: true}));
-            if (el.value === '\(escaped)') return 'OK';
-            el.value = '\(escaped)';
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
             return el.value === '\(escaped)' ? 'OK' : 'VALUE_MISMATCH';
         })();
         """
@@ -284,7 +285,7 @@ class LoginSiteWebSession: NSObject {
     private func calibratedFillJS(selector: String, value: String) -> String {
         let safeSel = escapeForJS(selector)
         let safeVal = escapeForJS(value)
-        return "(function(){ try { var el = document.querySelector('" + safeSel + "'); if (!el) return 'CAL_NOT_FOUND'; el.focus(); el.value = ''; var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); if (ns && ns.set) { ns.set.call(el, '" + safeVal + "'); } else { el.value = '" + safeVal + "'; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return el.value.length > 0 ? 'CAL_OK' : 'CAL_MISMATCH'; } catch(e) { return 'CAL_ERROR'; } })()"
+        return "(function(){ try { var el = document.querySelector('" + safeSel + "'); if (!el) return 'CAL_NOT_FOUND'; el.focus(); var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; } el.dispatchEvent(new Event('input', {bubbles:true})); if (ns && ns.set) { ns.set.call(el, '" + safeVal + "'); } else { el.value = '" + safeVal + "'; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return el.value.length > 0 ? 'CAL_OK' : 'CAL_MISMATCH'; } catch(e) { return 'CAL_ERROR'; } })()"
     }
 
     private func calibratedClickJS(selector: String) -> String {
@@ -378,7 +379,7 @@ class LoginSiteWebSession: NSObject {
         let safeVal = escapeForJS(value)
         let cx = Int(coords.x)
         let cy = Int(coords.y)
-        let js = "(function(){var el=document.elementFromPoint(\(cx),\(cy));if(!el)return'NO_EL';if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){var inp=el.querySelector('input');if(inp)el=inp;}el.focus();el.value='';var ns=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');if(ns&&ns.set){ns.set.call(el,'" + safeVal + "');}else{el.value='" + safeVal + "';}el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return el.value.length>0?'COORD_OK':'COORD_MISMATCH';})()"
+        let js = "(function(){var el=document.elementFromPoint(\(cx),\(cy));if(!el)return'NO_EL';if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){var inp=el.querySelector('input');if(inp)el=inp;}el.focus();var ns=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');if(ns&&ns.set){ns.set.call(el,'');}else{el.value='';}el.dispatchEvent(new Event('input',{bubbles:true}));if(ns&&ns.set){ns.set.call(el,'" + safeVal + "');}else{el.value='" + safeVal + "';}el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return el.value.length>0?'COORD_OK':'COORD_MISMATCH';})()"
         let result = await executeJS(js)
         if result == "COORD_OK" || result == "COORD_MISMATCH" {
             return (true, "\(fieldName) filled via calibrated coordinates")
@@ -396,8 +397,9 @@ class LoginSiteWebSession: NSObject {
             if (!el) return 'NOT_FOUND';
             el.focus();
             el.dispatchEvent(new Event('focus', {bubbles: true}));
-            el.value = '';
             var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
             el.dispatchEvent(new Event('input', {bubbles: true}));
             el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -420,8 +422,9 @@ class LoginSiteWebSession: NSObject {
             if (!el) return 'NOT_FOUND';
             el.focus();
             el.dispatchEvent(new Event('focus', {bubbles: true}));
-            el.value = '';
             var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (ns && ns.set) { ns.set.call(el, '\(escaped)'); } else { el.value = '\(escaped)'; }
             el.dispatchEvent(new Event('input', {bubbles: true}));
             el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -1009,6 +1012,31 @@ class LoginSiteWebSession: NSObject {
         _ = await executeJS(js)
     }
 
+    func clearAllInputFields() async {
+        let js = """
+        (function() {
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            var fields = document.querySelectorAll('input[type="email"], input[type="text"], input[type="password"], input[autocomplete="email"], input[autocomplete="username"], input[autocomplete="current-password"], #email, #login-password');
+            var cleared = 0;
+            var seen = new Set();
+            for (var i = 0; i < fields.length; i++) {
+                var el = fields[i];
+                if (seen.has(el)) continue;
+                seen.add(el);
+                if (el.value && el.value.length > 0) {
+                    el.focus();
+                    if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    cleared++;
+                }
+            }
+            return 'CLEARED_' + cleared;
+        })();
+        """
+        _ = await executeJS(js)
+    }
+
     func preSaveCredentials(username: String, password: String) async {
         let escapedUser = username.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
         let escapedPass = password.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
@@ -1016,6 +1044,7 @@ class LoginSiteWebSession: NSObject {
         (function() {
             var emailFields = document.querySelectorAll('input[type="email"], input[type="text"], input[autocomplete="email"], input[autocomplete="username"]');
             var passFields = document.querySelectorAll('input[type="password"]');
+            var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
             for (var i = 0; i < emailFields.length; i++) {
                 var el = emailFields[i];
                 try {
@@ -1028,8 +1057,9 @@ class LoginSiteWebSession: NSObject {
                     el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,clientX:cx,clientY:cy}));
                     el.dispatchEvent(new MouseEvent('click', {bubbles:true,clientX:cx,clientY:cy}));
                     el.dispatchEvent(new Event('focus', {bubbles:true}));
-                    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-                    if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escapedUser)'); }
+                    if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    if (ns && ns.set) { ns.set.call(el, '\(escapedUser)'); }
                     else { el.value = '\(escapedUser)'; }
                     el.dispatchEvent(new Event('input', {bubbles:true}));
                     el.dispatchEvent(new Event('change', {bubbles:true}));
@@ -1047,8 +1077,9 @@ class LoginSiteWebSession: NSObject {
                     el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true,clientX:cx,clientY:cy}));
                     el.dispatchEvent(new MouseEvent('click', {bubbles:true,clientX:cx,clientY:cy}));
                     el.dispatchEvent(new Event('focus', {bubbles:true}));
-                    var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-                    if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escapedPass)'); }
+                    if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    if (ns && ns.set) { ns.set.call(el, '\(escapedPass)'); }
                     else { el.value = '\(escapedPass)'; }
                     el.dispatchEvent(new Event('input', {bubbles:true}));
                     el.dispatchEvent(new Event('change', {bubbles:true}));

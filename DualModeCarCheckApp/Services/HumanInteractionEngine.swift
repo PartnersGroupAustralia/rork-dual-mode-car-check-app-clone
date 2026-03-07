@@ -137,8 +137,9 @@ class HumanInteractionEngine {
             if (!el) return 'NOT_FOUND';
             el.focus();
             el.dispatchEvent(new Event('focus', {bubbles: true}));
-            el.value = '';
             var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (ns && ns.set) { ns.set.call(el, '\(escapedUser)'); } else { el.value = '\(escapedUser)'; }
             el.dispatchEvent(new Event('input', {bubbles: true}));
             el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -160,8 +161,9 @@ class HumanInteractionEngine {
             if (!el) return 'NOT_FOUND';
             el.focus();
             el.dispatchEvent(new Event('focus', {bubbles: true}));
-            el.value = '';
             var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (ns && ns.set) { ns.set.call(el, ''); } else { el.value = ''; }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
             if (ns && ns.set) { ns.set.call(el, '\(escapedPass)'); } else { el.value = '\(escapedPass)'; }
             el.dispatchEvent(new Event('input', {bubbles: true}));
             el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -863,6 +865,8 @@ class HumanInteractionEngine {
             function setValue(el, val) {
                 el.focus();
                 var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, ''); } else { el.value = ''; }
+                el.dispatchEvent(new Event('input', {bubbles:true}));
                 if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, val); }
                 else { el.value = val; }
                 el.dispatchEvent(new Event('input', {bubbles:true}));
@@ -1010,9 +1014,11 @@ class HumanInteractionEngine {
                 el.focus();
                 var tracker = el._valueTracker;
                 var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, ''); } else { el.value = ''; }
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                if (tracker) { tracker.setValue(''); }
                 if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, val); }
                 else { el.value = val; }
-                if (tracker) { tracker.setValue(''); }
                 el.dispatchEvent(new Event('input', {bubbles: true}));
                 el.dispatchEvent(new Event('change', {bubbles: true}));
                 var inputEvent = new InputEvent('input', {bubbles: true, cancelable: false, inputType: 'insertText', data: val});
@@ -1163,8 +1169,9 @@ class HumanInteractionEngine {
                     var el = document.querySelector(selectors[i]);
                     if (el && !el.disabled) {
                         el.focus();
-                        el.value = '';
                         var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                        if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, ''); } else { el.value = ''; }
+                        el.dispatchEvent(new Event('input', {bubbles:true}));
                         if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(el, '\(escaped)'); }
                         else { el.value = '\(escaped)'; }
                         el.dispatchEvent(new Event('input', {bubbles:true}));
