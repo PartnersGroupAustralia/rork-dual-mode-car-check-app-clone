@@ -25,6 +25,7 @@ struct PPSRSettingsView: View {
     @State private var exportedJSON: String = ""
     @State private var showImportFileImporter: Bool = false
     @State private var nordAccessKeyInput: String = ""
+    @State private var isEditingNordKey: Bool = false
     @State private var isTestingVPNConfigs: Bool = false
 
     private let proxyService = ProxyRotationService.shared
@@ -702,7 +703,7 @@ struct PPSRSettingsView: View {
                 }
             }
 
-            if !nordService.hasAccessKey {
+            if !nordService.hasAccessKey || isEditingNordKey {
                 HStack {
                     SecureField("Nord Access Key", text: $nordAccessKeyInput)
                         .font(.system(.caption, design: .monospaced))
@@ -710,10 +711,25 @@ struct PPSRSettingsView: View {
                     Button("Save") {
                         nordService.setAccessKey(nordAccessKeyInput)
                         nordAccessKeyInput = ""
+                        isEditingNordKey = false
                     }
                     .disabled(nordAccessKeyInput.isEmpty)
+                    if isEditingNordKey {
+                        Button("Cancel") {
+                            nordAccessKeyInput = ""
+                            isEditingNordKey = false
+                        }
+                        .foregroundStyle(.secondary)
+                    }
                 }
             } else {
+                Button {
+                    isEditingNordKey = true
+                } label: {
+                    Label("Change Access Key", systemImage: "key.horizontal")
+                }
+                .foregroundStyle(.orange)
+
                 if !nordService.hasPrivateKey {
                     Button {
                         Task { await nordService.fetchPrivateKey() }
