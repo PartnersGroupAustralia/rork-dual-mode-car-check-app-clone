@@ -118,9 +118,10 @@ class LoginViewModel {
 
     init() {
         engine.onScreenshot = { [weak self] screenshot in
-            self?.debugScreenshots.insert(screenshot, at: 0)
-            if let count = self?.debugScreenshots.count, count > 500 {
-                self?.debugScreenshots = Array(self!.debugScreenshots.prefix(500))
+            guard let self else { return }
+            self.debugScreenshots.insert(screenshot, at: 0)
+            if self.debugScreenshots.count > 500 {
+                self.debugScreenshots = Array(self.debugScreenshots.prefix(500))
             }
         }
         engine.onPurgeScreenshots = { [weak self] ids in

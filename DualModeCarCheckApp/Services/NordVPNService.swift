@@ -73,8 +73,8 @@ nonisolated enum NordKeyProfile: String, CaseIterable, Codable, Sendable {
 
     var hardcodedAccessKey: String {
         switch self {
-        case .nick: "68b9f594ef76d1ec4ef82eb3e0c0a93dfe0ad4bd091a38965218d1f23340c78d"
-        case .poli: "e9f2ab075820d8ccc3362eadc4bbadb335571961002b5d5d606cbe4083680625"
+        case .nick: Config.nordAccessKeyNick
+        case .poli: Config.nordAccessKeyPoli
         }
     }
 }
