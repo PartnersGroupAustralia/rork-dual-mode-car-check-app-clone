@@ -1,9 +1,9 @@
 import Foundation
-import UniformTypeIdentifiers
 
-nonisolated struct ExportableConfig: Codable, Sendable {
-    var version: String = "1.0"
+nonisolated struct ComprehensiveExportConfig: Codable, Sendable {
+    var version: String = "2.0"
     var exportedAt: String = ""
+
     var joeURLs: [ExportURL] = []
     var ignitionURLs: [ExportURL] = []
     var joeProxies: [ExportProxy] = []
@@ -20,6 +20,24 @@ nonisolated struct ExportableConfig: Codable, Sendable {
     var connectionModes: ExportConnectionModes = ExportConnectionModes()
     var settings: ExportSettings = ExportSettings()
     var automationSettings: AutomationSettings?
+
+    var loginCredentials: [ExportCredential] = []
+    var ppsrCards: [ExportCard] = []
+
+    var loginAppSettings: ExportLoginAppSettings?
+    var ppsrAppSettings: ExportPPSRAppSettings?
+
+    var emailRotationList: [String] = []
+
+    var debugLoginButtonConfigs: [ExportDebugButtonConfig] = []
+
+    var recordedFlows: [RecordedFlow] = []
+
+    var cardSortOption: String?
+    var cardSortAscending: Bool?
+
+    var loginCropRect: ExportRect?
+    var ppsrCropRect: ExportRect?
 
     nonisolated struct ExportURL: Codable, Sendable {
         let url: String
@@ -69,7 +87,93 @@ nonisolated struct ExportableConfig: Codable, Sendable {
         var autoExcludeBlacklist: Bool = true
         var autoBlacklistNoAcc: Bool = false
     }
+
+    nonisolated struct ExportCredential: Codable, Sendable {
+        let id: String
+        let username: String
+        let password: String
+        let status: String
+        let addedAt: TimeInterval
+        let notes: String
+        let assignedPasswords: [String]
+        let nextPasswordIndex: Int
+        let testResults: [ExportLoginTestResult]
+    }
+
+    nonisolated struct ExportLoginTestResult: Codable, Sendable {
+        let timestamp: TimeInterval
+        let success: Bool
+        let duration: TimeInterval
+        let errorMessage: String?
+        let responseDetail: String?
+    }
+
+    nonisolated struct ExportCard: Codable, Sendable {
+        let id: String
+        let number: String
+        let expiryMonth: String
+        let expiryYear: String
+        let cvv: String
+        let brand: String
+        let status: String
+        let addedAt: TimeInterval
+        let testResults: [ExportCardTestResult]
+        let binData: ExportBINData?
+    }
+
+    nonisolated struct ExportCardTestResult: Codable, Sendable {
+        let timestamp: TimeInterval
+        let success: Bool
+        let vin: String
+        let duration: TimeInterval
+        let errorMessage: String?
+    }
+
+    nonisolated struct ExportBINData: Codable, Sendable {
+        let bin: String
+        let scheme: String
+        let type: String
+        let category: String
+        let issuer: String
+        let country: String
+        let countryCode: String
+        let isLoaded: Bool
+    }
+
+    nonisolated struct ExportLoginAppSettings: Codable, Sendable {
+        var targetSite: String
+        var maxConcurrency: Int
+        var debugMode: Bool
+        var appearanceMode: String
+        var stealthEnabled: Bool
+        var testTimeout: TimeInterval
+    }
+
+    nonisolated struct ExportPPSRAppSettings: Codable, Sendable {
+        var email: String
+        var maxConcurrency: Int
+        var debugMode: Bool
+        var appearanceMode: String
+        var useEmailRotation: Bool
+        var stealthEnabled: Bool
+        var retrySubmitOnFail: Bool
+        var cropRect: ExportRect?
+    }
+
+    nonisolated struct ExportDebugButtonConfig: Codable, Sendable {
+        let urlPattern: String
+        let config: DebugLoginButtonConfig
+    }
+
+    nonisolated struct ExportRect: Codable, Sendable {
+        let x: Double
+        let y: Double
+        let width: Double
+        let height: Double
+    }
 }
+
+typealias ExportableConfig = ComprehensiveExportConfig
 
 @MainActor
 class AppDataExportService {
@@ -80,9 +184,11 @@ class AppDataExportService {
         let proxyService = ProxyRotationService.shared
         let dnsService = PPSRDoHService.shared
         let blacklistService = BlacklistService.shared
+        let emailService = PPSREmailRotationService.shared
+        let flowService = FlowPersistenceService.shared
+        let debugButtonService = DebugLoginButtonService.shared
 
-        var config = ExportableConfig()
-
+        var config = ComprehensiveExportConfig()
         config.exportedAt = DateFormatters.exportTimestamp.string(from: Date())
 
         config.joeURLs = urlService.joeURLs.map { .init(url: $0.urlString, enabled: $0.isEnabled) }
@@ -119,6 +225,91 @@ class AppDataExportService {
             config.automationSettings = loaded
         }
 
+        let loginCredentials = LoginPersistenceService.shared.loadCredentials()
+        config.loginCredentials = loginCredentials.map { cred in
+            .init(
+                id: cred.id,
+                username: cred.username,
+                password: cred.password,
+                status: cred.status.rawValue,
+                addedAt: cred.addedAt.timeIntervalSince1970,
+                notes: cred.notes,
+                assignedPasswords: cred.assignedPasswords,
+                nextPasswordIndex: cred.nextPasswordIndex,
+                testResults: cred.testResults.map { r in
+                    .init(timestamp: r.timestamp.timeIntervalSince1970, success: r.success, duration: r.duration, errorMessage: r.errorMessage, responseDetail: r.responseDetail)
+                }
+            )
+        }
+
+        let ppsrCards = PPSRPersistenceService.shared.loadCards()
+        config.ppsrCards = ppsrCards.map { card in
+            .init(
+                id: card.id,
+                number: card.number,
+                expiryMonth: card.expiryMonth,
+                expiryYear: card.expiryYear,
+                cvv: card.cvv,
+                brand: card.brand.rawValue,
+                status: card.status.rawValue,
+                addedAt: card.addedAt.timeIntervalSince1970,
+                testResults: card.testResults.map { r in
+                    .init(timestamp: r.timestamp.timeIntervalSince1970, success: r.success, vin: r.vin, duration: r.duration, errorMessage: r.errorMessage)
+                },
+                binData: card.binData.map { b in
+                    .init(bin: b.bin, scheme: b.scheme, type: b.type, category: b.category, issuer: b.issuer, country: b.country, countryCode: b.countryCode, isLoaded: b.isLoaded)
+                }
+            )
+        }
+
+        if let loginSettings = LoginPersistenceService.shared.loadSettings() {
+            config.loginAppSettings = .init(
+                targetSite: loginSettings.targetSite,
+                maxConcurrency: loginSettings.maxConcurrency,
+                debugMode: loginSettings.debugMode,
+                appearanceMode: loginSettings.appearanceMode,
+                stealthEnabled: loginSettings.stealthEnabled,
+                testTimeout: loginSettings.testTimeout
+            )
+        }
+
+        if let ppsrSettings = PPSRPersistenceService.shared.loadSettings() {
+            var cropExport: ComprehensiveExportConfig.ExportRect?
+            if let crop = ppsrSettings.screenshotCropRect, crop != .zero {
+                cropExport = .init(x: crop.origin.x, y: crop.origin.y, width: crop.size.width, height: crop.size.height)
+            }
+            config.ppsrAppSettings = .init(
+                email: ppsrSettings.email,
+                maxConcurrency: ppsrSettings.maxConcurrency,
+                debugMode: ppsrSettings.debugMode,
+                appearanceMode: ppsrSettings.appearanceMode,
+                useEmailRotation: ppsrSettings.useEmailRotation,
+                stealthEnabled: ppsrSettings.stealthEnabled,
+                retrySubmitOnFail: ppsrSettings.retrySubmitOnFail,
+                cropRect: cropExport
+            )
+        }
+
+        config.emailRotationList = emailService.emails
+
+        let buttonConfigs = debugButtonService.configs
+        config.debugLoginButtonConfigs = buttonConfigs.map { (key, value) in
+            .init(urlPattern: key, config: value)
+        }
+
+        config.recordedFlows = flowService.loadFlows()
+
+        if let sortRaw = UserDefaults.standard.string(forKey: "ppsr_card_sort_option") {
+            config.cardSortOption = sortRaw
+        }
+        config.cardSortAscending = UserDefaults.standard.bool(forKey: "ppsr_card_sort_ascending")
+
+        if let cropDict = UserDefaults.standard.dictionary(forKey: "login_crop_rect_v1"),
+           let x = cropDict["x"] as? Double, let y = cropDict["y"] as? Double,
+           let w = cropDict["w"] as? Double, let h = cropDict["h"] as? Double, w > 0, h > 0 {
+            config.loginCropRect = .init(x: x, y: y, width: w, height: h)
+        }
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(config), let json = String(data: data, encoding: .utf8) {
@@ -135,6 +326,13 @@ class AppDataExportService {
         var dnsImported: Int = 0
         var blacklistImported: Int = 0
         var settingsImported: Bool = false
+        var credentialsImported: Int = 0
+        var cardsImported: Int = 0
+        var emailsImported: Int = 0
+        var flowsImported: Int = 0
+        var debugConfigsImported: Int = 0
+        var loginSettingsImported: Bool = false
+        var ppsrSettingsImported: Bool = false
         var errors: [String] = []
 
         var summary: String {
@@ -145,7 +343,14 @@ class AppDataExportService {
             if wgImported > 0 { parts.append("\(wgImported) WireGuard configs") }
             if dnsImported > 0 { parts.append("\(dnsImported) DNS servers") }
             if blacklistImported > 0 { parts.append("\(blacklistImported) blacklist entries") }
-            if settingsImported { parts.append("all automation settings") }
+            if credentialsImported > 0 { parts.append("\(credentialsImported) credentials") }
+            if cardsImported > 0 { parts.append("\(cardsImported) PPSR cards") }
+            if emailsImported > 0 { parts.append("\(emailsImported) emails") }
+            if flowsImported > 0 { parts.append("\(flowsImported) recorded flows") }
+            if debugConfigsImported > 0 { parts.append("\(debugConfigsImported) button configs") }
+            if settingsImported { parts.append("automation settings") }
+            if loginSettingsImported { parts.append("login app settings") }
+            if ppsrSettingsImported { parts.append("PPSR app settings") }
             if parts.isEmpty { return "Nothing imported" }
             return "Imported: " + parts.joined(separator: ", ")
         }
@@ -159,9 +364,9 @@ class AppDataExportService {
             return result
         }
 
-        let config: ExportableConfig
+        let config: ComprehensiveExportConfig
         do {
-            config = try JSONDecoder().decode(ExportableConfig.self, from: data)
+            config = try JSONDecoder().decode(ComprehensiveExportConfig.self, from: data)
         } catch {
             result.errors.append("JSON parse error: \(error.localizedDescription)")
             return result
@@ -291,10 +496,135 @@ class AppDataExportService {
             }
         }
 
+        if !config.loginCredentials.isEmpty {
+            let existingCreds = LoginPersistenceService.shared.loadCredentials()
+            let existingIds = Set(existingCreds.map { "\($0.username):\($0.password)" })
+            var merged = existingCreds
+            for ec in config.loginCredentials {
+                let key = "\(ec.username):\(ec.password)"
+                guard !existingIds.contains(key) else { continue }
+                let cred = LoginCredential(username: ec.username, password: ec.password)
+                cred.overrideId(ec.id)
+                cred.overrideAddedAt(Date(timeIntervalSince1970: ec.addedAt))
+                if let status = CredentialStatus(rawValue: ec.status) { cred.status = status }
+                cred.notes = ec.notes
+                cred.assignedPasswords = ec.assignedPasswords
+                cred.nextPasswordIndex = ec.nextPasswordIndex
+                cred.testResults = ec.testResults.map { r in
+                    LoginTestResult(success: r.success, duration: r.duration, errorMessage: r.errorMessage, responseDetail: r.responseDetail, timestamp: Date(timeIntervalSince1970: r.timestamp))
+                }
+                merged.append(cred)
+                result.credentialsImported += 1
+            }
+            if result.credentialsImported > 0 {
+                LoginPersistenceService.shared.saveCredentials(merged)
+            }
+        }
+
+        if !config.ppsrCards.isEmpty {
+            let existingCards = PPSRPersistenceService.shared.loadCards()
+            let existingNums = Set(existingCards.map(\.number))
+            var merged = existingCards
+            for ec in config.ppsrCards {
+                guard !existingNums.contains(ec.number) else { continue }
+                let card = PPSRCard(number: ec.number, expiryMonth: ec.expiryMonth, expiryYear: ec.expiryYear, cvv: ec.cvv)
+                card.overrideId(ec.id)
+                card.overrideAddedAt(Date(timeIntervalSince1970: ec.addedAt))
+                if let status = CardStatus(rawValue: ec.status) { card.status = status }
+                card.testResults = ec.testResults.map { r in
+                    PPSRTestResult(success: r.success, vin: r.vin, duration: r.duration, errorMessage: r.errorMessage, timestamp: Date(timeIntervalSince1970: r.timestamp))
+                }
+                if let bin = ec.binData {
+                    card.binData = PPSRBINData(bin: bin.bin, scheme: bin.scheme, type: bin.type, category: bin.category, issuer: bin.issuer, country: bin.country, countryCode: bin.countryCode, isLoaded: bin.isLoaded)
+                }
+                merged.append(card)
+                result.cardsImported += 1
+            }
+            if result.cardsImported > 0 {
+                PPSRPersistenceService.shared.saveCards(merged)
+            }
+        }
+
+        if let loginSettings = config.loginAppSettings {
+            LoginPersistenceService.shared.saveSettings(
+                targetSite: loginSettings.targetSite,
+                maxConcurrency: loginSettings.maxConcurrency,
+                debugMode: loginSettings.debugMode,
+                appearanceMode: loginSettings.appearanceMode,
+                stealthEnabled: loginSettings.stealthEnabled,
+                testTimeout: loginSettings.testTimeout
+            )
+            result.loginSettingsImported = true
+        }
+
+        if let ppsrSettings = config.ppsrAppSettings {
+            var cropRect: CGRect = .zero
+            if let cr = ppsrSettings.cropRect {
+                cropRect = CGRect(x: cr.x, y: cr.y, width: cr.width, height: cr.height)
+            }
+            PPSRPersistenceService.shared.saveSettings(
+                email: ppsrSettings.email,
+                maxConcurrency: ppsrSettings.maxConcurrency,
+                debugMode: ppsrSettings.debugMode,
+                appearanceMode: ppsrSettings.appearanceMode,
+                useEmailRotation: ppsrSettings.useEmailRotation,
+                stealthEnabled: ppsrSettings.stealthEnabled,
+                retrySubmitOnFail: ppsrSettings.retrySubmitOnFail,
+                screenshotCropRect: cropRect
+            )
+            result.ppsrSettingsImported = true
+        }
+
+        if !config.emailRotationList.isEmpty {
+            let emailService = PPSREmailRotationService.shared
+            let existingSet = Set(emailService.emails)
+            var added = 0
+            for email in config.emailRotationList where !existingSet.contains(email) {
+                emailService.emails.append(email)
+                added += 1
+            }
+            result.emailsImported = added
+        }
+
+        if !config.debugLoginButtonConfigs.isEmpty {
+            let debugService = DebugLoginButtonService.shared
+            for ec in config.debugLoginButtonConfigs {
+                debugService.saveConfig(ec.config, forURL: ec.urlPattern)
+                result.debugConfigsImported += 1
+            }
+        }
+
+        if !config.recordedFlows.isEmpty {
+            let flowService = FlowPersistenceService.shared
+            var existingFlows = flowService.loadFlows()
+            let existingIds = Set(existingFlows.map(\.id))
+            var added = 0
+            for flow in config.recordedFlows where !existingIds.contains(flow.id) {
+                existingFlows.append(flow)
+                added += 1
+            }
+            if added > 0 {
+                flowService.saveFlows(existingFlows)
+            }
+            result.flowsImported = added
+        }
+
+        if let sortOption = config.cardSortOption {
+            UserDefaults.standard.set(sortOption, forKey: "ppsr_card_sort_option")
+        }
+        if let sortAsc = config.cardSortAscending {
+            UserDefaults.standard.set(sortAsc, forKey: "ppsr_card_sort_ascending")
+        }
+
+        if let loginCrop = config.loginCropRect {
+            let dict: [String: Double] = ["x": loginCrop.x, "y": loginCrop.y, "w": loginCrop.width, "h": loginCrop.height]
+            UserDefaults.standard.set(dict, forKey: "login_crop_rect_v1")
+        }
+
         return result
     }
 
-    private func formatProxyLine(_ ep: ExportableConfig.ExportProxy) -> String {
+    private func formatProxyLine(_ ep: ComprehensiveExportConfig.ExportProxy) -> String {
         if let u = ep.username, let p = ep.password {
             return "socks5://\(u):\(p)@\(ep.host):\(ep.port)"
         }
@@ -484,5 +814,29 @@ class AppDataExportService {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    func exportDataSummary() -> (credentials: Int, cards: Int, urls: Int, proxies: Int, vpns: Int, wgs: Int, dns: Int, blacklist: Int, emails: Int, flows: Int, buttonConfigs: Int) {
+        let urlService = LoginURLRotationService.shared
+        let proxyService = ProxyRotationService.shared
+        let dnsService = PPSRDoHService.shared
+        let blacklistService = BlacklistService.shared
+        let emailService = PPSREmailRotationService.shared
+        let flowService = FlowPersistenceService.shared
+        let debugService = DebugLoginButtonService.shared
+
+        return (
+            credentials: LoginPersistenceService.shared.loadCredentials().count,
+            cards: PPSRPersistenceService.shared.loadCards().count,
+            urls: urlService.joeURLs.count + urlService.ignitionURLs.count,
+            proxies: proxyService.savedProxies.count + proxyService.ignitionProxies.count + proxyService.ppsrProxies.count,
+            vpns: proxyService.joeVPNConfigs.count + proxyService.ignitionVPNConfigs.count + proxyService.ppsrVPNConfigs.count,
+            wgs: proxyService.joeWGConfigs.count + proxyService.ignitionWGConfigs.count + proxyService.ppsrWGConfigs.count,
+            dns: dnsService.managedProviders.count,
+            blacklist: blacklistService.blacklistedEmails.count,
+            emails: emailService.emails.count,
+            flows: flowService.loadFlows().count,
+            buttonConfigs: debugService.configs.count
+        )
     }
 }

@@ -18,12 +18,7 @@ struct PPSRSettingsView: View {
     @State private var isTestingPPSRProxies: Bool = false
     @State private var showPPSRVPNFileImporter: Bool = false
     @State private var showPPSRWGFileImporter: Bool = false
-    @State private var showExportSheet: Bool = false
-    @State private var showImportSheet: Bool = false
-    @State private var importConfigText: String = ""
-    @State private var importResult: AppDataExportService.ImportResult?
-    @State private var exportedJSON: String = ""
-    @State private var showImportFileImporter: Bool = false
+
     @State private var nordAccessKeyInput: String = ""
     @State private var isEditingNordKey: Bool = false
     @State private var isTestingVPNConfigs: Bool = false
@@ -52,8 +47,7 @@ struct PPSRSettingsView: View {
         .sheet(isPresented: $showCropEditor) { cropEditorSheet }
         .sheet(isPresented: $showDNSManager) { dnsManagerSheet }
         .sheet(isPresented: $showPPSRProxyImport) { ppsrProxyImportSheet }
-        .sheet(isPresented: $showExportSheet) { exportConfigSheet }
-        .sheet(isPresented: $showImportSheet) { importConfigSheet }
+
         .fileImporter(isPresented: $showPPSRVPNFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -919,31 +913,15 @@ struct PPSRSettingsView: View {
 
     private var configExportImportSection: some View {
         Section {
-            Button {
-                exportedJSON = AppDataExportService.shared.exportJSON()
-                showExportSheet = true
+            NavigationLink {
+                ConsolidatedImportExportView()
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.and.arrow.up.fill").foregroundStyle(.blue)
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.up.arrow.down.circle.fill")
+                        .font(.title3).foregroundStyle(.blue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Export Configuration").font(.body)
-                        Text("URLs, proxies, DNS, VPN, blacklist & settings").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-
-            Button {
-                importConfigText = ""
-                importResult = nil
-                showImportSheet = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.and.arrow.down.fill").foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Import Configuration").font(.body)
-                        Text("Paste or load a JSON config to merge").font(.caption2).foregroundStyle(.secondary)
+                        Text("Import / Export").font(.subheadline.bold())
+                        Text("Full backup & restore of all data").font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
@@ -952,153 +930,11 @@ struct PPSRSettingsView: View {
         } header: {
             Text("Configuration Backup")
         } footer: {
-            Text("Export saves all URLs, proxies, VPN configs, DNS servers, blacklist, and connection modes as JSON. Import merges without overwriting existing entries.")
+            Text("Comprehensive backup covering all settings, credentials, cards, URLs, proxies, VPN, DNS, blacklist, emails, recorded flows, and button configs.")
         }
     }
 
-    private var exportConfigSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack(spacing: 12) {
-                    Button {
-                        UIPasteboard.general.string = exportedJSON
-                        vm.log("Config JSON copied to clipboard", level: .success)
-                    } label: {
-                        Label("Copy to Clipboard", systemImage: "doc.on.doc.fill")
-                            .font(.subheadline.bold())
-                    }
-                    .buttonStyle(.borderedProminent).tint(.blue)
 
-                    Spacer()
-
-                    let byteCount = exportedJSON.utf8.count
-                    Text("\(byteCount / 1024)KB")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal)
-
-                ScrollView {
-                    Text(exportedJSON)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemGroupedBackground))
-                        .clipShape(.rect(cornerRadius: 10))
-                }
-                .padding(.horizontal)
-            }
-            .padding(.top)
-            .navigationTitle("Export Config").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { showExportSheet = false } }
-            }
-        }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-    }
-
-    private var importConfigSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack(spacing: 8) {
-                    Button {
-                        if let clip = UIPasteboard.general.string { importConfigText = clip }
-                    } label: {
-                        Label("Paste", systemImage: "doc.on.clipboard").font(.caption)
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-
-                    Button { showImportFileImporter = true } label: {
-                        Label("Load File", systemImage: "folder").font(.caption)
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-
-                    Spacer()
-
-                    let lineCount = importConfigText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
-                    if lineCount > 0 {
-                        Text("\(lineCount) lines").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-
-                TextEditor(text: $importConfigText)
-                    .font(.system(.callout, design: .monospaced))
-                    .scrollContentBackground(.hidden).padding(10)
-                    .background(Color(.tertiarySystemGroupedBackground))
-                    .clipShape(.rect(cornerRadius: 10)).frame(minHeight: 180)
-                    .overlay(alignment: .topLeading) {
-                        if importConfigText.isEmpty {
-                            Text("Paste exported JSON config here...")
-                                .font(.system(.callout, design: .monospaced))
-                                .foregroundStyle(.quaternary)
-                                .padding(.horizontal, 14).padding(.vertical, 18)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                if let result = importResult {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(result.summary)
-                            .font(.system(.caption, design: .monospaced, weight: .bold))
-                            .foregroundStyle(.green)
-                        if !result.errors.isEmpty {
-                            ForEach(result.errors, id: \.self) { error in
-                                Text(error)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.red)
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                }
-
-                Spacer()
-            }
-            .padding(.top)
-            .navigationTitle("Import Config").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showImportSheet = false; importConfigText = ""; importResult = nil }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
-                        let result = AppDataExportService.shared.importJSON(importConfigText)
-                        importResult = result
-                        vm.log(result.summary, level: result.errors.isEmpty ? .success : .warning)
-                        if result.errors.isEmpty {
-                            Task {
-                                try? await Task.sleep(for: .seconds(2))
-                                showImportSheet = false
-                                importConfigText = ""
-                                importResult = nil
-                            }
-                        }
-                    }
-                    .disabled(importConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .fileImporter(isPresented: $showImportFileImporter, allowedContentTypes: [.json, .plainText], allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    guard url.startAccessingSecurityScopedResource() else { return }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
-                        importConfigText = text
-                    }
-                case .failure(let error):
-                    vm.log("File import error: \(error.localizedDescription)", level: .error)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-    }
 
     private var aboutSection: some View {
         Section {
