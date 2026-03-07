@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 nonisolated struct ComprehensiveExportConfig: Codable, Sendable {
     var version: String = "2.0"
