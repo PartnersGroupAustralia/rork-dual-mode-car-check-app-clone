@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SavedCredentialsView: View {
     let vm: PPSRAutomationViewModel
@@ -12,6 +13,9 @@ struct SavedCredentialsView: View {
     @State private var filterCountry: String? = nil
     @State private var showFilters: Bool = false
     @State private var viewMode: ViewMode = .list
+    @State private var showFileImporter: Bool = false
+    @State private var fileImportResult: String? = nil
+    @State private var selectedCSVMapping: PPSRCard.CSVColumnMapping = .auto
 
     nonisolated enum SortOption: String, CaseIterable, Identifiable, Sendable {
         case dateAdded = "Date Added"
@@ -260,53 +264,181 @@ struct SavedCredentialsView: View {
 
     private var importSheet: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Smart Import").font(.headline)
-                    Text("Paste card data in any common format. The parser automatically detects separators.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Supported formats:").font(.caption.bold()).foregroundStyle(.secondary)
+            List {
+                Section {
+                    Button {
+                        showFileImporter = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.badge.plus")
+                                .font(.title3)
+                                .foregroundStyle(.teal)
+                                .frame(width: 36, height: 36)
+                                .background(.teal.opacity(0.12))
+                                .clipShape(.rect(cornerRadius: 8))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import from File")
+                                    .font(.subheadline.weight(.bold))
+                                Text("CSV or XLSX file")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Picker("Column Mapping", selection: $selectedCSVMapping) {
+                        Text("Auto Detect").tag(PPSRCard.CSVColumnMapping.auto)
+                        Text("Columns A, B, C").tag(PPSRCard.CSVColumnMapping.columnsABC)
+                        Text("Columns C, E, F").tag(PPSRCard.CSVColumnMapping.columnsCEF)
+                    }
+                    .font(.subheadline)
+                } header: {
+                    Label("File Import", systemImage: "folder.fill")
+                } footer: {
+                    Text("CSV/TSV files with card number, expiry, and CVV. Auto detect tries columns C,E,F first then A,B,C.")
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Supported formats:")
+                            .font(.caption.bold()).foregroundStyle(.secondary)
                         Group {
-                            Text("4111111111111111|12|28|123")
-                            Text("4111111111111111:12:28:123")
-                            Text("4111111111111111,12,28,123")
-                            Text("4111111111111111;12;28;123")
-                            Text("4111111111111111 12 28 123")
+                            Text("Pipe: 4111111111111111|12|28|123")
+                            Text("Colon: 4111111111111111:12:28:123")
+                            Text("Comma: 4111111111111111,12,28,123")
                         }
                         .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+
+                        Text("Rich text (order format):")
+                            .font(.caption.bold()).foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                        Text("CCNUM: 5473541007693740 CVV: 054 EXP DATE: 12/27")
+                            .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+
+                    TextEditor(text: $importText)
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(10)
+                        .background(Color(.tertiarySystemGroupedBackground))
+                        .clipShape(.rect(cornerRadius: 10))
+                        .frame(minHeight: 160)
+                        .overlay(alignment: .topLeading) {
+                            if importText.isEmpty {
+                                Text("Paste cards in any format...")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(.quaternary)
+                                    .padding(.horizontal, 14).padding(.vertical, 18)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            if let clip = UIPasteboard.general.string { importText = clip }
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+
+                        Spacer()
+
+                        let lineCount = importText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }).count
+                        if lineCount > 0 {
+                            Text("\(lineCount) lines")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Label("Paste Import", systemImage: "doc.on.doc")
+                }
+
+                if let result = fileImportResult {
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text(result)
+                                .font(.system(.caption, design: .monospaced, weight: .bold))
+                                .foregroundStyle(.green)
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                TextEditor(text: $importText)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(12)
-                    .background(Color(.tertiarySystemGroupedBackground))
-                    .clipShape(.rect(cornerRadius: 10))
-                    .frame(minHeight: 180)
-
-                Spacer()
             }
-            .padding()
+            .listStyle(.insetGrouped)
             .navigationTitle("Import Cards")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showImportSheet = false } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showImportSheet = false
+                        importText = ""
+                        fileImportResult = nil
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
+                    Button("Import Text") {
                         vm.smartImportCards(importText)
                         importText = ""
                         showImportSheet = false
+                        fileImportResult = nil
                     }
                     .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.commaSeparatedText, .tabSeparatedText, .plainText, UTType(filenameExtension: "xlsx") ?? .data],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    guard url.startAccessingSecurityScopedResource() else {
+                        vm.log("File access denied", level: .error)
+                        return
+                    }
+                    defer { url.stopAccessingSecurityScopedResource() }
+
+                    let ext = url.pathExtension.lowercased()
+                    if ext == "xlsx" {
+                        if let csvText = parseXLSXasCSV(url: url) {
+                            let r = vm.importFromCSV(csvText, mapping: selectedCSVMapping)
+                            fileImportResult = "\(r.added) added, \(r.duplicates) duplicates skipped"
+                        } else {
+                            vm.log("Could not parse XLSX file — try exporting as CSV", level: .error)
+                            fileImportResult = "XLSX parse failed — export as CSV instead"
+                        }
+                    } else {
+                        if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
+                            let r = vm.importFromCSV(text, mapping: selectedCSVMapping)
+                            fileImportResult = "\(r.added) added, \(r.duplicates) duplicates skipped"
+                        } else {
+                            vm.log("Could not read file", level: .error)
+                        }
+                    }
+                case .failure(let error):
+                    vm.log("File import error: \(error.localizedDescription)", level: .error)
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+    }
+
+    private func parseXLSXasCSV(url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else { return nil }
+        if content.contains(",") || content.contains("\t") {
+            return content
+        }
+        return nil
     }
 }
 

@@ -19,6 +19,7 @@ nonisolated struct ExportableConfig: Codable, Sendable {
     var blacklist: [ExportBlacklist] = []
     var connectionModes: ExportConnectionModes = ExportConnectionModes()
     var settings: ExportSettings = ExportSettings()
+    var automationSettings: AutomationSettings?
 
     nonisolated struct ExportURL: Codable, Sendable {
         let url: String
@@ -113,6 +114,11 @@ class AppDataExportService {
             autoBlacklistNoAcc: blacklistService.autoBlacklistNoAcc
         )
 
+        if let data = UserDefaults.standard.data(forKey: "automation_settings_v1"),
+           let loaded = try? JSONDecoder().decode(AutomationSettings.self, from: data) {
+            config.automationSettings = loaded
+        }
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(config), let json = String(data: data, encoding: .utf8) {
@@ -128,6 +134,7 @@ class AppDataExportService {
         var wgImported: Int = 0
         var dnsImported: Int = 0
         var blacklistImported: Int = 0
+        var settingsImported: Bool = false
         var errors: [String] = []
 
         var summary: String {
@@ -138,6 +145,7 @@ class AppDataExportService {
             if wgImported > 0 { parts.append("\(wgImported) WireGuard configs") }
             if dnsImported > 0 { parts.append("\(dnsImported) DNS servers") }
             if blacklistImported > 0 { parts.append("\(blacklistImported) blacklist entries") }
+            if settingsImported { parts.append("all automation settings") }
             if parts.isEmpty { return "Nothing imported" }
             return "Imported: " + parts.joined(separator: ", ")
         }
@@ -275,6 +283,13 @@ class AppDataExportService {
 
         blacklistService.autoExcludeBlacklist = config.settings.autoExcludeBlacklist
         blacklistService.autoBlacklistNoAcc = config.settings.autoBlacklistNoAcc
+
+        if let automation = config.automationSettings {
+            if let data = try? JSONEncoder().encode(automation) {
+                UserDefaults.standard.set(data, forKey: "automation_settings_v1")
+                result.settingsImported = true
+            }
+        }
 
         return result
     }

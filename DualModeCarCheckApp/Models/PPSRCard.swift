@@ -184,6 +184,32 @@ class PPSRCard: Identifiable {
     }
 
     static func smartParse(_ input: String) -> [PPSRCard] {
+        if let card = parseRichTextBlock(input) {
+            return [card]
+        }
+
+        let blocks = input.components(separatedBy: "\n\n")
+        if blocks.count > 1 {
+            var cards: [PPSRCard] = []
+            for block in blocks {
+                let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { continue }
+                if let card = parseRichTextBlock(trimmed) {
+                    cards.append(card)
+                    continue
+                }
+                let blockLines = trimmed.components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                for line in blockLines {
+                    if let card = parseLine(line) {
+                        cards.append(card)
+                    }
+                }
+            }
+            if !cards.isEmpty { return cards }
+        }
+
         let lines = input.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -195,6 +221,200 @@ class PPSRCard: Identifiable {
             }
         }
         return cards
+    }
+
+    static func parseRichTextBlock(_ block: String) -> PPSRCard? {
+        let text = block.replacingOccurrences(of: "\r\n", with: "\n")
+        let combined = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: " ")
+
+        var ccnum: String?
+        var cvv: String?
+        var expDate: String?
+
+        let ccnumPatterns = [
+            "CCNUM[:\\s]+(\\d{13,19})",
+            "CC(?:NUM)?[:#]\\s*(\\d{13,19})",
+            "Card\\s*(?:Number|No|#)?[:\\s]+(\\d{13,19})"
+        ]
+        for pattern in ccnumPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let nsRange = NSRange(combined.startIndex..., in: combined)
+                if let match = regex.firstMatch(in: combined, range: nsRange) {
+                    if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: combined) {
+                        let digits = String(combined[range])
+                        if digits.count >= 13, digits.count <= 19 {
+                            ccnum = digits
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        let cvvPatterns = [
+            "CVV[:\\s]+(\\d{3,4})",
+            "CVC[:\\s]+(\\d{3,4})",
+            "CVV2[:\\s]+(\\d{3,4})"
+        ]
+        for pattern in cvvPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let nsRange = NSRange(combined.startIndex..., in: combined)
+                if let match = regex.firstMatch(in: combined, range: nsRange) {
+                    if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: combined) {
+                        cvv = String(combined[range])
+                        break
+                    }
+                }
+            }
+        }
+
+        let expPatterns = [
+            "EXP(?:\\s+DATE)?[:\\s]+(\\d{1,2}[/\\-]\\d{2,4})",
+            "Expiry[:\\s]+(\\d{1,2}[/\\-]\\d{2,4})",
+            "Exp[:\\s]+(\\d{1,2}[/\\-]\\d{2,4})"
+        ]
+        for pattern in expPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let nsRange = NSRange(combined.startIndex..., in: combined)
+                if let match = regex.firstMatch(in: combined, range: nsRange) {
+                    if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: combined) {
+                        expDate = String(combined[range])
+                        break
+                    }
+                }
+            }
+        }
+
+        guard let num = ccnum, let cv = cvv, let exp = expDate else { return nil }
+
+        let expParts = exp.components(separatedBy: CharacterSet(charactersIn: "/-"))
+        guard expParts.count == 2 else { return nil }
+        let month = expParts[0].filter { $0.isNumber }
+        let year = expParts[1].filter { $0.isNumber }
+
+        let sanitizedMonth = sanitizeTwoDigit(month)
+        guard let monthInt = Int(sanitizedMonth), monthInt >= 1, monthInt <= 12 else { return nil }
+        guard cv.count >= 3, cv.count <= 4 else { return nil }
+
+        return PPSRCard(number: num, expiryMonth: sanitizedMonth, expiryYear: sanitizeTwoDigit(year), cvv: cv)
+    }
+
+    static func parseCSVData(_ csvText: String, columnMapping: CSVColumnMapping = .auto) -> [PPSRCard] {
+        let lines = csvText.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !lines.isEmpty else { return [] }
+
+        var cards: [PPSRCard] = []
+        let startIndex = isHeaderRow(lines[0]) ? 1 : 0
+
+        for i in startIndex..<lines.count {
+            let columns = parseCSVLine(lines[i])
+            if let card = extractCardFromColumns(columns, mapping: columnMapping) {
+                cards.append(card)
+            }
+        }
+        return cards
+    }
+
+    private static func isHeaderRow(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        let headerKeywords = ["card", "number", "expiry", "cvv", "cvc", "exp", "month", "year", "cc"]
+        return headerKeywords.contains(where: { lower.contains($0) }) && line.filter({ $0.isNumber }).count < 6
+    }
+
+    private static func parseCSVLine(_ line: String) -> [String] {
+        var columns: [String] = []
+        var current = ""
+        var inQuotes = false
+
+        let separator: Character = line.contains("\t") ? "\t" : ","
+
+        for char in line {
+            if char == "\"" {
+                inQuotes.toggle()
+            } else if char == separator && !inQuotes {
+                columns.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(char)
+            }
+        }
+        columns.append(current.trimmingCharacters(in: .whitespaces))
+        return columns
+    }
+
+    nonisolated enum CSVColumnMapping: Sendable {
+        case auto
+        case columnsABC
+        case columnsCEF
+    }
+
+    private static func extractCardFromColumns(_ columns: [String], mapping: CSVColumnMapping) -> PPSRCard? {
+        switch mapping {
+        case .columnsABC:
+            guard columns.count >= 3 else { return nil }
+            return buildFromThreeFields(columns[0], columns[1], columns[2])
+        case .columnsCEF:
+            guard columns.count >= 6 else { return nil }
+            return buildFromThreeFields(columns[2], columns[4], columns[5])
+        case .auto:
+            if columns.count >= 6 {
+                if let card = buildFromThreeFields(columns[2], columns[4], columns[5]) {
+                    return card
+                }
+            }
+            if columns.count >= 3 {
+                if let card = buildFromThreeFields(columns[0], columns[1], columns[2]) {
+                    return card
+                }
+            }
+            if columns.count >= 4 {
+                let parts = columns.map { $0.trimmingCharacters(in: .whitespaces) }
+                if let card = tryBuildCard(from: parts) {
+                    return card
+                }
+            }
+            return nil
+        }
+    }
+
+    private static func buildFromThreeFields(_ cardField: String, _ expiryField: String, _ cvvField: String) -> PPSRCard? {
+        let cardNum = cardField.filter { $0.isNumber }
+        guard cardNum.count >= 13, cardNum.count <= 19 else { return nil }
+
+        let cvvDigits = cvvField.filter { $0.isNumber }
+        guard cvvDigits.count >= 3, cvvDigits.count <= 4 else { return nil }
+
+        var month: String
+        var year: String
+
+        let expClean = expiryField.trimmingCharacters(in: .whitespaces)
+        if expClean.contains("/") || expClean.contains("-") {
+            let parts = expClean.components(separatedBy: CharacterSet(charactersIn: "/-"))
+            guard parts.count == 2 else { return nil }
+            month = parts[0].filter { $0.isNumber }
+            year = parts[1].filter { $0.isNumber }
+        } else {
+            let digits = expClean.filter { $0.isNumber }
+            if digits.count == 4 {
+                month = String(digits.prefix(2))
+                year = String(digits.suffix(2))
+            } else if digits.count == 6 {
+                month = String(digits.prefix(2))
+                year = String(digits.suffix(2))
+            } else {
+                return nil
+            }
+        }
+
+        let sanitizedMonth = sanitizeTwoDigit(month)
+        guard let monthInt = Int(sanitizedMonth), monthInt >= 1, monthInt <= 12 else { return nil }
+
+        return PPSRCard(number: cardNum, expiryMonth: sanitizedMonth, expiryYear: sanitizeTwoDigit(year), cvv: String(cvvDigits.prefix(4)))
     }
 
     static func parseLine(_ line: String) -> PPSRCard? {

@@ -372,21 +372,53 @@ class PPSRAutomationViewModel {
             return
         }
 
+        var added = 0
+        var dupes = 0
         for card in parsed {
             let isDuplicate = cards.contains { $0.number == card.number }
             if isDuplicate {
+                dupes += 1
                 log("Skipped duplicate: \(card.brand.rawValue) \(card.number)", level: .warning)
             } else {
                 cards.append(card)
+                added += 1
                 log("Added \(card.brand.rawValue) \(card.number) exp \(card.formattedExpiry)")
                 Task { await card.loadBINData() }
             }
         }
 
         if parsed.count > 0 {
-            log("Smart import: \(parsed.count) card(s) parsed from \(lines.count) line(s)", level: .success)
+            var msg = "Smart import: \(added) card(s) added from \(lines.count) line(s)"
+            if dupes > 0 { msg += ", \(dupes) duplicate(s) skipped" }
+            log(msg, level: .success)
         }
         persistCards()
+    }
+
+    func importFromCSV(_ csvText: String, mapping: PPSRCard.CSVColumnMapping = .auto) -> (added: Int, duplicates: Int) {
+        let parsed = PPSRCard.parseCSVData(csvText, columnMapping: mapping)
+        var added = 0
+        var dupes = 0
+        for card in parsed {
+            if cards.contains(where: { $0.number == card.number }) {
+                dupes += 1
+                log("Skipped duplicate: \(card.brand.rawValue) \(card.number)", level: .warning)
+            } else {
+                cards.append(card)
+                added += 1
+                log("Added \(card.brand.rawValue) \(card.number) exp \(card.formattedExpiry)")
+                Task { await card.loadBINData() }
+            }
+        }
+        if added > 0 || dupes > 0 {
+            var msg = "CSV import: \(added) card(s) added"
+            if dupes > 0 { msg += ", \(dupes) duplicate(s) skipped" }
+            log(msg, level: added > 0 ? .success : .warning)
+        } else {
+            log("CSV import: no valid cards found", level: .warning)
+        }
+        persistCards()
+        return (added, dupes)
     }
 
     func deleteCard(_ card: PPSRCard) {
