@@ -41,6 +41,19 @@ class PPSRAutomationViewModel {
     var consecutiveUnusualFailures: Int = 0
     var lastBatchResult: BatchResult?
     var testTimeout: TimeInterval = 30
+    var cardSortOption: CardSortOption = .dateAdded
+    var cardSortAscending: Bool = false
+
+    nonisolated enum CardSortOption: String, CaseIterable, Identifiable, Sendable {
+        case dateAdded = "Date Added"
+        case lastTest = "Last Test"
+        case successRate = "Success Rate"
+        case totalTests = "Total Tests"
+        case bin = "BIN Number"
+        case brand = "Brand"
+        case country = "Country"
+        var id: String { rawValue }
+    }
     var diagnosticReport: DiagnosticReport?
     var isDiagnosticRunning: Bool = false
     var lastHealthCheck: (healthy: Bool, detail: String)?
@@ -188,8 +201,26 @@ class PPSRAutomationViewModel {
 
     var workingCards: [PPSRCard] { cards.filter { $0.status == .working } }
     var deadCards: [PPSRCard] { cards.filter { $0.status == .dead } }
-    var untestedCards: [PPSRCard] { cards.filter { $0.status == .untested } }
+    var untestedCards: [PPSRCard] { applySortOrder(cards.filter { $0.status == .untested }) }
     var testingCards: [PPSRCard] { cards.filter { $0.status == .testing } }
+
+    func applySortOrder(_ input: [PPSRCard]) -> [PPSRCard] {
+        var result = input
+        result.sort { a, b in
+            let comparison: Bool
+            switch cardSortOption {
+            case .dateAdded: comparison = a.addedAt > b.addedAt
+            case .lastTest: comparison = (a.lastTestedAt ?? .distantPast) > (b.lastTestedAt ?? .distantPast)
+            case .successRate: comparison = a.successRate > b.successRate
+            case .totalTests: comparison = a.totalTests > b.totalTests
+            case .bin: comparison = a.binPrefix < b.binPrefix
+            case .brand: comparison = a.brand.rawValue < b.brand.rawValue
+            case .country: comparison = (a.binData?.country ?? "") < (b.binData?.country ?? "")
+            }
+            return cardSortAscending ? !comparison : comparison
+        }
+        return result
+    }
     var activeChecks: [PPSRCheck] { checks.filter { !$0.status.isTerminal } }
     var completedChecks: [PPSRCheck] { checks.filter { $0.status == .completed } }
     var failedChecks: [PPSRCheck] { checks.filter { $0.status == .failed } }
@@ -650,7 +681,7 @@ class PPSRAutomationViewModel {
     }
 
     func testSelectedCards(_ selectedCards: [PPSRCard]) {
-        let cardsToTest = selectedCards.filter { $0.status == .untested || $0.status == .dead }
+        let cardsToTest = applySortOrder(selectedCards.filter { $0.status == .untested || $0.status == .dead })
         guard !cardsToTest.isEmpty else {
             log("No eligible cards in selection", level: .warning)
             return

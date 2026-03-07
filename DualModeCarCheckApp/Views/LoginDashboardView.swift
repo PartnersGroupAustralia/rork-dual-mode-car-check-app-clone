@@ -398,6 +398,40 @@ struct LoginDashboardView: View {
                 .tint(.teal)
             }
 
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.subheadline)
+                    .foregroundStyle(.teal)
+                Text("Test Order")
+                    .font(.subheadline.bold())
+                Spacer()
+                Menu {
+                    ForEach(PPSRAutomationViewModel.CardSortOption.allCases) { option in
+                        Button {
+                            withAnimation(.snappy) {
+                                if vm.cardSortOption == option { vm.cardSortAscending.toggle() }
+                                else { vm.cardSortOption = option; vm.cardSortAscending = false }
+                            }
+                        } label: {
+                            HStack {
+                                Text(option.rawValue)
+                                if vm.cardSortOption == option {
+                                    Image(systemName: vm.cardSortAscending ? "chevron.up" : "chevron.down")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(vm.cardSortOption.rawValue)
+                            .font(.subheadline.weight(.medium))
+                        Image(systemName: vm.cardSortAscending ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.teal)
+                }
+            }
+
             if !vm.untestedCards.isEmpty && !vm.isRunning {
                 Button {
                     vm.testAllUntested()

@@ -6,8 +6,7 @@ struct SavedCredentialsView: View {
     @State private var showImportSheet: Bool = false
     @State private var importText: String = ""
     @State private var searchText: String = ""
-    @State private var sortOption: SortOption = .dateAdded
-    @State private var sortAscending: Bool = false
+
     @State private var filterBrand: CardBrand? = nil
     @State private var filterStatus: CardStatus? = nil
     @State private var filterCountry: String? = nil
@@ -18,17 +17,6 @@ struct SavedCredentialsView: View {
     @State private var selectedCSVMapping: PPSRCard.CSVColumnMapping = .auto
     @State private var isSelecting: Bool = false
     @State private var selectedCardIds: Set<String> = []
-
-    nonisolated enum SortOption: String, CaseIterable, Identifiable, Sendable {
-        case dateAdded = "Date Added"
-        case lastTest = "Last Test"
-        case successRate = "Success Rate"
-        case totalTests = "Total Tests"
-        case bin = "BIN Number"
-        case brand = "Brand"
-        case country = "Country"
-        var id: String { rawValue }
-    }
 
     private var filteredCards: [PPSRCard] {
         var result = vm.cards.filter { $0.status != .dead }
@@ -44,21 +32,7 @@ struct SavedCredentialsView: View {
         if let brand = filterBrand { result = result.filter { $0.brand == brand } }
         if let status = filterStatus { result = result.filter { $0.status == status } }
         if let country = filterCountry, !country.isEmpty { result = result.filter { $0.binData?.country == country } }
-
-        result.sort { a, b in
-            let comparison: Bool
-            switch sortOption {
-            case .dateAdded: comparison = a.addedAt > b.addedAt
-            case .lastTest: comparison = (a.lastTestedAt ?? .distantPast) > (b.lastTestedAt ?? .distantPast)
-            case .successRate: comparison = a.successRate > b.successRate
-            case .totalTests: comparison = a.totalTests > b.totalTests
-            case .bin: comparison = a.binPrefix < b.binPrefix
-            case .brand: comparison = a.brand.rawValue < b.brand.rawValue
-            case .country: comparison = (a.binData?.country ?? "") < (b.binData?.country ?? "")
-            }
-            return sortAscending ? !comparison : comparison
-        }
-        return result
+        return vm.applySortOrder(result)
     }
 
     private var availableCountries: [String] {
@@ -171,24 +145,24 @@ struct SavedCredentialsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Menu {
-                    ForEach(SortOption.allCases) { option in
+                    ForEach(PPSRAutomationViewModel.CardSortOption.allCases) { option in
                         Button {
                             withAnimation(.snappy) {
-                                if sortOption == option { sortAscending.toggle() }
-                                else { sortOption = option; sortAscending = false }
+                                if vm.cardSortOption == option { vm.cardSortAscending.toggle() }
+                                else { vm.cardSortOption = option; vm.cardSortAscending = false }
                             }
                         } label: {
                             HStack {
                                 Text(option.rawValue)
-                                if sortOption == option { Image(systemName: sortAscending ? "chevron.up" : "chevron.down") }
+                                if vm.cardSortOption == option { Image(systemName: vm.cardSortAscending ? "chevron.up" : "chevron.down") }
                             }
                         }
                     }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.up.arrow.down").font(.caption2)
-                        Text(sortOption.rawValue).font(.subheadline.weight(.medium))
-                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down").font(.caption2)
+                        Text(vm.cardSortOption.rawValue).font(.subheadline.weight(.medium))
+                        Image(systemName: vm.cardSortAscending ? "chevron.up" : "chevron.down").font(.caption2)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Color.teal.opacity(0.15))
