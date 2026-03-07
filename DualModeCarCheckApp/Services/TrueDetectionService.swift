@@ -47,7 +47,7 @@ class TrueDetectionService {
         var errorBannerSelectors: [String] = [".error-banner", ".alert-danger"]
     }
 
-    private var cooldownAccounts: [String: Date] = []
+    private var cooldownAccounts: [String: Date] = [:]
 
     func isOnCooldown(account: String) -> Bool {
         guard let cooldownUntil = cooldownAccounts[account] else { return false }
@@ -66,7 +66,7 @@ class TrueDetectionService {
         session: LoginSiteWebSession,
         username: String,
         password: String,
-        config: TrueDetectionConfig = TrueDetectionConfig(),
+        config: TrueDetectionConfig = .init(),
         sessionId: String = "",
         onLog: ((String, PPSRLogEntry.Level) -> Void)? = nil
     ) async -> TrueDetectionResult {
