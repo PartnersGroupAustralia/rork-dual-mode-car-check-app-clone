@@ -192,7 +192,7 @@ class LoginAutomationEngine {
         let targetURLString = session.targetURL.absoluteString
 
         var calibration = calibrationService.calibrationFor(url: targetURLString)
-        if calibration == nil || !calibration!.isCalibrated {
+        if calibration == nil || calibration?.isCalibrated != true {
             logger.log("No calibration — running auto-calibrate probe", category: .automation, level: .info, sessionId: sessionId)
             if let autoCal = await session.autoCalibrate() {
                 calibrationService.saveCalibration(autoCal, forURL: targetURLString)
@@ -211,7 +211,7 @@ class LoginAutomationEngine {
                 }
             }
         } else {
-            attempt.logs.append(PPSRLogEntry(message: "Using saved calibration (confidence: \(String(format: "%.0f%%", calibration!.confidence * 100)))", level: .info))
+            attempt.logs.append(PPSRLogEntry(message: "Using saved calibration (confidence: \(String(format: "%.0f%%", (calibration?.confidence ?? 0) * 100)))", level: .info))
         }
 
         let maxSubmitCycles = 4

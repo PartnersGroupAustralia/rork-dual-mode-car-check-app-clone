@@ -257,7 +257,7 @@ class VisionMLService {
 
             if elementLower.contains(searchLower) {
                 let score = Double(searchLower.count) / Double(elementLower.count) * Double(element.confidence)
-                if bestMatch == nil || score > bestMatch!.score {
+                if bestMatch == nil || score > (bestMatch?.score ?? 0) {
                     bestMatch = (element, score)
                 }
             }

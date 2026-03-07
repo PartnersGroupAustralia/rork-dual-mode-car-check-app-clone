@@ -101,7 +101,9 @@ class TempDisabledCheckService {
             }
 
             lastRunDate = Date()
-            UserDefaults.standard.set(lastRunDate!.timeIntervalSince1970, forKey: "tempDisabledLastRun")
+            if let runDate = lastRunDate {
+                UserDefaults.standard.set(runDate.timeIntervalSince1970, forKey: "tempDisabledLastRun")
+            }
             isRunning = false
             onLog("Temp disabled password check complete", .success)
             addLog("Check complete")

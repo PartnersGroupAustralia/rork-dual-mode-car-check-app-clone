@@ -8,7 +8,26 @@
 import Foundation
 
 enum Config {
-    // Environment variables will be injected here at build time
-    // Add your ENV in Project Settings → Environment Variables
-    // Then use Config.YOUR_ENV_NAME in code
+    // NordVPN access keys - should be set via Environment Variables in Project Settings
+    // To configure: Xcode → Target → Build Settings → User-Defined → add NORD_ACCESS_KEY_NICK / NORD_ACCESS_KEY_POLI
+    static let nordAccessKeyNick: String = {
+        if let key = ProcessInfo.processInfo.environment["NORD_ACCESS_KEY_NICK"], !key.isEmpty {
+            return key
+        }
+        return ""
+    }()
+
+    static let nordAccessKeyPoli: String = {
+        if let key = ProcessInfo.processInfo.environment["NORD_ACCESS_KEY_POLI"], !key.isEmpty {
+            return key
+        }
+        return ""
+    }()
+
+    static let nordFallbackAccessKey: String = {
+        if let key = ProcessInfo.processInfo.environment["NORD_FALLBACK_ACCESS_KEY"], !key.isEmpty {
+            return key
+        }
+        return ""
+    }()
 }

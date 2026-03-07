@@ -307,7 +307,7 @@ class SuperTestService {
         currentItem = ""
         isRunning = false
 
-        addLog("SUPER TEST COMPLETE — \(totalPassed)/\(totalTested) passed, \(totalFailed) failed, \(disabledCount) auto-disabled, \(enabledCount) auto-enabled in \(lastReport!.formattedDuration)", level: .success)
+        addLog("SUPER TEST COMPLETE — \(totalPassed)/\(totalTested) passed, \(totalFailed) failed, \(disabledCount) auto-disabled, \(enabledCount) auto-enabled in \(lastReport?.formattedDuration ?? "unknown")", level: .success)
         logger.endSession("supertest", category: .superTest, message: "SUPER TEST COMPLETE: \(totalPassed)/\(totalTested) passed, \(totalFailed) failed", level: totalFailed == 0 ? .success : .warning)
     }
 
@@ -554,7 +554,7 @@ class SuperTestService {
                 category: .dnsServers,
                 passed: passed,
                 latencyMs: answer?.latencyMs,
-                detail: passed ? "Resolved → \(answer!.ip) in \(answer!.latencyMs)ms" : "Resolution failed"
+                detail: passed ? "Resolved → \(answer?.ip ?? "unknown") in \(answer?.latencyMs.map { "\($0)" } ?? "?")ms" : "Resolution failed"
             ))
 
             dohService.toggleProvider(id: provider.id, enabled: passed)
@@ -562,7 +562,7 @@ class SuperTestService {
                 addLog("Auto-disabled DNS: \(provider.name)", level: .warning)
                 logger.log("DNS FAIL (auto-disabled): \(provider.name)", category: .dns, level: .warning, sessionId: "supertest")
             } else {
-                logger.log("DNS PASS: \(provider.name) \(answer!.ip) in \(answer!.latencyMs)ms", category: .dns, level: .success, sessionId: "supertest", durationMs: answer?.latencyMs)
+                logger.log("DNS PASS: \(provider.name) \(answer?.ip ?? "unknown") in \(answer?.latencyMs.map { "\($0)" } ?? "?")ms", category: .dns, level: .success, sessionId: "supertest", durationMs: answer?.latencyMs)
             }
 
             phaseProgress[.dnsServers] = (total: total, done: index + 1)
