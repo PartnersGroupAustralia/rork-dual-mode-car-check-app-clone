@@ -33,7 +33,6 @@ struct PPSRSettingsView: View {
 
     var body: some View {
         List {
-            importSection
             networksLinkSection
             automationSection
             concurrencySection
@@ -594,27 +593,7 @@ struct PPSRSettingsView: View {
         }
     }
 
-    private var importSection: some View {
-        Section {
-            if !vm.untestedCards.isEmpty {
-                Button {
-                    vm.testAllUntested()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Label("Test All Untested (\(vm.untestedCards.count))", systemImage: "play.fill").font(.headline)
-                        Spacer()
-                    }
-                }
-                .disabled(vm.isRunning)
-                .listRowBackground(vm.isRunning ? Color.indigo.opacity(0.4) : Color.indigo)
-                .foregroundStyle(.white)
-                .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
-            }
-        } header: {
-            Text("Quick Actions")
-        }
-    }
+
 
     private var iCloudSection: some View {
         Section {

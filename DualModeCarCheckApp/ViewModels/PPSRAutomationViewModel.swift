@@ -649,6 +649,87 @@ class PPSRAutomationViewModel {
         log("Stopping queue — completing current tests then stopping...", level: .warning)
     }
 
+    func testSelectedCards(_ selectedCards: [PPSRCard]) {
+        let cardsToTest = selectedCards.filter { $0.status == .untested || $0.status == .dead }
+        guard !cardsToTest.isEmpty else {
+            log("No eligible cards in selection", level: .warning)
+            return
+        }
+
+        for card in cardsToTest {
+            card.status = .untested
+        }
+
+        isPaused = false
+        isStopping = false
+        log("Starting selected test: \(cardsToTest.count) cards, max \(maxConcurrency) concurrent")
+        isRunning = true
+
+        var batchWorking = 0
+        var batchDead = 0
+        var batchRequeued = 0
+
+        batchTask = Task {
+            configureEngine()
+            await withTaskGroup(of: Void.self) { group in
+                var running = 0
+
+                for card in cardsToTest {
+                    if isStopping { break }
+                    while isPaused && !isStopping {
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                    if isStopping { break }
+                    if running >= maxConcurrency {
+                        await group.next()
+                        running -= 1
+                    }
+
+                    running += 1
+                    let vin = PPSRVINGenerator.generate()
+                    let email = resolveEmail()
+                    card.status = .testing
+                    let sessionIdx = running
+
+                    let check = PPSRCheck(vin: vin, email: email, card: card, sessionIndex: sessionIdx)
+                    checks.insert(check, at: 0)
+                    activeTestCount += 1
+
+                    group.addTask { [engine, testTimeout] in
+                        let outcome = await engine.runCheck(check, timeout: testTimeout)
+                        await MainActor.run {
+                            self.activeTestCount -= 1
+                            self.handleOutcome(outcome, card: card, check: check, vin: vin)
+                            switch outcome {
+                            case .pass: batchWorking += 1
+                            case .failInstitution: batchDead += 1
+                            case .uncertain, .timeout, .connectionFailure: batchRequeued += 1
+                            }
+                            self.persistCards()
+                        }
+                    }
+                }
+                await group.waitForAll()
+            }
+
+            let result = BatchResult(working: batchWorking, dead: batchDead, requeued: batchRequeued, total: batchWorking + batchDead + batchRequeued)
+            lastBatchResult = result
+            isRunning = false
+            isPaused = false
+            let stoppedEarly = isStopping
+            isStopping = false
+
+            if stoppedEarly {
+                log("Selected batch stopped: \(batchWorking) working, \(batchDead) dead, \(batchRequeued) requeued", level: .warning)
+            } else {
+                log("Selected batch complete: \(batchWorking) working, \(batchDead) dead, \(batchRequeued) requeued", level: .success)
+            }
+            showBatchResultPopup = true
+            notifications.sendBatchComplete(working: batchWorking, dead: batchDead, requeued: batchRequeued)
+            persistCards()
+        }
+    }
+
     func retestCard(_ card: PPSRCard) {
         card.status = .untested
         testSingleCard(card)

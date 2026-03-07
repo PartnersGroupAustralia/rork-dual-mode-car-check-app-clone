@@ -16,6 +16,8 @@ struct SavedCredentialsView: View {
     @State private var showFileImporter: Bool = false
     @State private var fileImportResult: String? = nil
     @State private var selectedCSVMapping: PPSRCard.CSVColumnMapping = .auto
+    @State private var isSelecting: Bool = false
+    @State private var selectedCardIds: Set<String> = []
 
     nonisolated enum SortOption: String, CaseIterable, Identifiable, Sendable {
         case dateAdded = "Date Added"
@@ -71,6 +73,7 @@ struct SavedCredentialsView: View {
         VStack(spacing: 0) {
             sortFilterBar
             if showFilters { filterSection }
+            if isSelecting { selectionBar }
             if viewMode == .tile {
                 cardsTileGrid
             } else {
@@ -78,9 +81,26 @@ struct SavedCredentialsView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Saved Cards")
+        .navigationTitle(isSelecting ? "\(selectedCardIds.count) Selected" : "Saved Cards")
         .searchable(text: $searchText, prompt: "Search cards, BIN, bank, country...")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if isSelecting {
+                    Button("Cancel") {
+                        withAnimation(.snappy) { isSelecting = false; selectedCardIds.removeAll() }
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    withAnimation(.snappy) {
+                        isSelecting.toggle()
+                        if !isSelecting { selectedCardIds.removeAll() }
+                    }
+                } label: {
+                    Image(systemName: isSelecting ? "xmark.circle.fill" : "checkmark.circle")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 ViewModeToggle(mode: $viewMode, accentColor: .teal)
             }
@@ -94,6 +114,57 @@ struct SavedCredentialsView: View {
             }
         }
         .sheet(isPresented: $showImportSheet) { importSheet }
+    }
+
+    private var selectionBar: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(.snappy) {
+                        if selectedCardIds.count == filteredCards.count {
+                            selectedCardIds.removeAll()
+                        } else {
+                            selectedCardIds = Set(filteredCards.map(\.id))
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: selectedCardIds.count == filteredCards.count ? "checkmark.circle.fill" : "circle")
+                            .font(.caption)
+                        Text(selectedCardIds.count == filteredCards.count ? "Deselect All" : "Select All")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.teal.opacity(0.15))
+                    .foregroundStyle(.teal)
+                    .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                if !selectedCardIds.isEmpty {
+                    Button {
+                        let cards = vm.cards.filter { selectedCardIds.contains($0.id) }
+                        vm.testSelectedCards(cards)
+                        withAnimation(.snappy) { isSelecting = false; selectedCardIds.removeAll() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.fill").font(.caption)
+                            Text("Test \(selectedCardIds.count) Card\(selectedCardIds.count == 1 ? "" : "s")")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Color.teal)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                    }
+                    .disabled(vm.isRunning)
+                    .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
+                }
+            }
+        }
+        .padding(.horizontal).padding(.vertical, 8)
+        .background(Color(.secondarySystemGroupedBackground))
     }
 
     private var sortFilterBar: some View {
@@ -202,14 +273,35 @@ struct SavedCredentialsView: View {
             } else {
                 List {
                     ForEach(filteredCards) { card in
-                        NavigationLink(value: card.id) {
-                            SavedCardRow(card: card)
+                        if isSelecting {
+                            Button {
+                                withAnimation(.snappy) {
+                                    if selectedCardIds.contains(card.id) {
+                                        selectedCardIds.remove(card.id)
+                                    } else {
+                                        selectedCardIds.insert(card.id)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedCardIds.contains(card.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.title3)
+                                        .foregroundStyle(selectedCardIds.contains(card.id) ? .teal : .secondary)
+                                    SavedCardRow(card: card)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(selectedCardIds.contains(card.id) ? Color.teal.opacity(0.08) : Color(.secondarySystemGroupedBackground))
+                        } else {
+                            NavigationLink(value: card.id) {
+                                SavedCardRow(card: card)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) { vm.deleteCard(card) } label: { Label("Delete", systemImage: "trash") }
+                                Button { vm.testSingleCard(card) } label: { Label("Test", systemImage: "play.fill") }.tint(.teal)
+                            }
+                            .listRowBackground(Color(.secondarySystemGroupedBackground))
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) { vm.deleteCard(card) } label: { Label("Delete", systemImage: "trash") }
-                            Button { vm.testSingleCard(card) } label: { Label("Test", systemImage: "play.fill") }.tint(.teal)
-                        }
-                        .listRowBackground(Color(.secondarySystemGroupedBackground))
                     }
                 }
                 .listStyle(.insetGrouped)

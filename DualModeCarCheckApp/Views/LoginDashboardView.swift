@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LoginDashboardView: View {
-    let vm: PPSRAutomationViewModel
+    @Bindable var vm: PPSRAutomationViewModel
 
     var body: some View {
         ScrollView {
@@ -17,6 +17,7 @@ struct LoginDashboardView: View {
                 if vm.stealthEnabled {
                     stealthBadge
                 }
+                testControlsCard
                 statsRow
                 if !vm.untestedCards.isEmpty {
                     cardSection(title: "Queued — Untested", cards: Array(vm.untestedCards.prefix(50)), color: .secondary, icon: "clock.fill")
@@ -377,6 +378,48 @@ struct LoginDashboardView: View {
         case .running: .blue
         case .pending: .secondary
         }
+    }
+
+    private var testControlsCard: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.subheadline)
+                    .foregroundStyle(.teal)
+                Text("Sessions")
+                    .font(.subheadline.bold())
+                Spacer()
+                Picker("", selection: $vm.maxConcurrency) {
+                    ForEach(1...8, id: \.self) { n in
+                        Text("\(n)").tag(n)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(.teal)
+            }
+
+            if !vm.untestedCards.isEmpty && !vm.isRunning {
+                Button {
+                    vm.testAllUntested()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.fill")
+                        Text("Test All Untested (\(vm.untestedCards.count))")
+                            .fontWeight(.semibold)
+                    }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(Color.teal)
+                    .foregroundStyle(.white)
+                    .clipShape(.rect(cornerRadius: 12))
+                }
+                .sensoryFeedback(.impact(weight: .heavy), trigger: vm.isRunning)
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(.rect(cornerRadius: 14))
     }
 
     private var emptyState: some View {
