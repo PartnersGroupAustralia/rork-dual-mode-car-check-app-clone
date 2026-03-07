@@ -171,39 +171,85 @@ struct LoginDashboardContentView: View {
                 connectionBadge
             }
 
-            dualModeToggle
+            multiSessionControl
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 14))
     }
 
-    private var dualModeToggle: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.caption.bold())
-                .foregroundStyle(vm.dualSiteMode ? .cyan : .secondary)
-            Toggle(isOn: Binding(
-                get: { vm.dualSiteMode },
-                set: { newVal in
-                    withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
-                        if newVal {
-                            vm.setSiteMode(.dual)
-                        } else {
-                            vm.setSiteMode(vm.isIgnitionMode ? .ignition : .joe)
-                        }
+    private var multiSessionControl: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.cyan)
+                Text("MULTI SESSION TEST")
+                    .font(.system(.caption, design: .monospaced, weight: .heavy))
+                    .foregroundStyle(.cyan)
+                Spacer()
+                Text("\(vm.maxConcurrency) sessions")
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.cyan.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.spring(duration: 0.25)) {
+                        vm.maxConcurrency = max(1, vm.maxConcurrency - 1)
+                    }
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.caption.bold())
+                        .frame(width: 32, height: 32)
+                        .background(Color(.tertiarySystemFill))
+                        .foregroundStyle(.primary)
+                        .clipShape(.rect(cornerRadius: 8))
+                }
+                .disabled(vm.maxConcurrency <= 1)
+
+                GeometryReader { geo in
+                    let maxSessions = 8
+                    let filledWidth = geo.size.width * CGFloat(vm.maxConcurrency) / CGFloat(maxSessions)
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(.quaternarySystemFill))
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(
+                                LinearGradient(
+                                    colors: [.cyan, .cyan.opacity(0.7)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: filledWidth)
                     }
                 }
-            )) {
-                Text("Dual Mode")
-                    .font(.subheadline.weight(.medium))
+                .frame(height: 32)
+
+                Button {
+                    withAnimation(.spring(duration: 0.25)) {
+                        vm.maxConcurrency = min(8, vm.maxConcurrency + 1)
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.bold())
+                        .frame(width: 32, height: 32)
+                        .background(Color(.tertiarySystemFill))
+                        .foregroundStyle(.primary)
+                        .clipShape(.rect(cornerRadius: 8))
+                }
+                .disabled(vm.maxConcurrency >= 8)
             }
-            .tint(.cyan)
         }
         .padding(10)
-        .background(vm.dualSiteMode ? Color.cyan.opacity(0.08) : Color(.tertiarySystemFill))
+        .background(Color.cyan.opacity(0.06))
         .clipShape(.rect(cornerRadius: 10))
-        .sensoryFeedback(.impact(weight: .medium), trigger: vm.dualSiteMode)
+        .sensoryFeedback(.impact(weight: .medium), trigger: vm.maxConcurrency)
     }
 
     private var connectionBadge: some View {
